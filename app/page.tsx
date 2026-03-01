@@ -28,13 +28,13 @@ function formatSummaryNumber(value: number | string): string {
   // Data is in thousands ('000), so:
   // - Values >= 1000000 (representing 1 billion+) → display as "B"
   // - Values >= 1 (representing 1 million+) → display as "Mil"
-  // - Values < 1 (representing less than 1 million) → display as-is
+  // - Values < 1 (representing less than 1 million) → display as "K"
   if (absValue >= 1e6) {
-    return `${sign}${(absValue / 1e6).toFixed(1)}B`
+    return `${sign}${(absValue / 1e6).toFixed(1)} B`
   } else if (absValue >= 1) {
-    return `${sign}${absValue.toFixed(1)}Mil`
+    return `${sign}${absValue.toFixed(1)} Mil`
   }
-  return `${sign}${absValue.toFixed(2)}K`
+  return `${sign}${absValue.toFixed(2)} K`
 }
 
 // Format currency for chat messages
