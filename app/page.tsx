@@ -27,23 +27,22 @@ function formatSummaryNumber(value: number | string): string {
   const sign = value < 0 ? '-' : ''
   
   // Data is in thousands ('000), so we need to convert to display format:
-  // - Divide by 1000 to convert from thousands to millions
-  // - Values >= 1000000 (representing 1 trillion+ actual) → display as "T"
-  // - Values >= 1000 (representing 1 billion+ actual) → display as "B"
-  // - Values >= 1 (representing 1 million+ actual) → display as "Mil"
-  // - Values < 1 (representing less than 1 million actual) → display as "K"
+  // - Values >= 1000000 (thousands) = 1 billion+ actual → display as "B" (divide by 1e6)
+  // - Values >= 1000 (thousands) = 1 million+ actual → display as "Mil" (divide by 1000)
+  // - Values >= 1 (thousands) = 1000+ actual → display as "K" (no division)
+  // - Values < 1 (thousands) = less than 1000 actual → display as "K" (no division)
+  // 
+  // Example: 70549.9 (thousands) = 70,549,900 actual = 70.5 million
+  // → 70549.9 >= 1000, so divide by 1000 = 70.5 Mil
   if (absValue >= 1e6) {
-    // 1,000,000 thousand = 1 trillion actual = 1000 billion display
-    return `${sign}${(absValue / 1e6).toFixed(1)} T`
+    // 1,000,000 thousand = 1 billion actual
+    return `${sign}${(absValue / 1e6).toFixed(1)} B`
   } else if (absValue >= 1000) {
-    // 1,000 thousand = 1 billion actual = 1 B display
-    return `${sign}${(absValue / 1000).toFixed(1)} B`
-  } else if (absValue >= 1) {
-    // 1 thousand = 1 million actual = 1 Mil display
-    return `${sign}${absValue.toFixed(1)} Mil`
+    // 1,000 thousand = 1 million actual
+    return `${sign}${(absValue / 1000).toFixed(1)} Mil`
   }
-  // Less than 1 thousand = less than 1 million actual
-  return `${sign}${absValue.toFixed(2)} K`
+  // Less than 1000 thousand = less than 1 million actual
+  return `${sign}${absValue.toFixed(1)} K`
 }
 
 // Format currency for chat messages
