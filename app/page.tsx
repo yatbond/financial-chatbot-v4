@@ -8,6 +8,7 @@ import { UserButton, useUser, SignedIn, SignedOut, SignInButton } from "@clerk/n
 // IMPORTANT: Data values are in thousands ('000), so:
 // - A value of 70.5 means 70,500 (thousands) = 70.5 million
 // - We display values >= 1 as "Mil" (not "K")
+// - NO multiplication needed - just change the label
 function formatSummaryNumber(value: number | string): string {
   // If it's a percentage string, format with one decimal place
   if (typeof value === 'string' && value.includes('%')) {
