@@ -870,6 +870,340 @@ function getUniqueValues(data: FinancialRow[], project: string, field: keyof Fin
 }
 
 // ============================================
+// Trend Query Handler
+// ============================================
+
+// Mapping from user-facing sheet/type keywords to actual Sheet_Name values used in monthly data
+const TREND_SHEET_MAP: Record<string, string[]> = {
+  'projection': ['Projection', 'Projected Cost'],
+  'projected': ['Projection', 'Projected Cost'],
+  'accrual': ['Accrual'],
+  'accrued': ['Accrual'],
+  'cash flow': ['Cash Flow', 'Cashflow', 'Cash Flow Actual received & paid as at'],
+  'cashflow': ['Cash Flow', 'Cashflow'],
+  'cf': ['Cash Flow', 'Cashflow'],
+  'committed': ['Committed Cost', 'Committed Value / Cost as at'],
+  'committed cost': ['Committed Cost'],
+  'committed value': ['Committed Cost'],
+}
+
+// Detect if a query is a Trend query
+function isTrendQuery(question: string): boolean {
+  const lowerQ = question.toLowerCase().trim()
+  return lowerQ.startsWith('trend ')
+}
+
+// Parse a Trend query to extract sheet, metric/item, and month count
+function parseTrendQuery(question: string): {
+  sheetName: string | null
+  dataTypeFilter: string | null
+  itemCode: string | null
+  monthCount: number
+  rawMetric: string
+} {
+  const lowerQ = question.toLowerCase().trim()
+  // Remove "trend" prefix
+  const afterTrend = lowerQ.replace(/^trend\s+/, '').trim()
+  
+  // Expand acronyms in the remaining text
+  const expanded = expandAcronyms(afterTrend)
+  
+  let sheetName: string | null = null
+  let dataTypeFilter: string | null = null
+  let itemCode: string | null = null
+  let monthCount = 6 // default
+  let rawMetric = afterTrend
+
+  // Extract month count from end of query (e.g., "trend accrual preliminaries 3")
+  const monthsMatch = expanded.match(/\s+(\d+)\s*(months?)?$/i)
+  if (monthsMatch) {
+    monthCount = parseInt(monthsMatch[1])
+    if (monthCount < 1) monthCount = 1
+    if (monthCount > 24) monthCount = 24
+    rawMetric = afterTrend.replace(/\s+\d+\s*(months?)?$/i, '').trim()
+  }
+
+  // Re-expand after trimming month count
+  const expandedClean = expandAcronyms(rawMetric)
+
+  // Try to detect sheet/financial type from the query
+  const sortedSheetEntries = Object.entries(TREND_SHEET_MAP).sort((a, b) => b[0].length - a[0].length)
+  
+  for (const [keyword, sheetCandidates] of sortedSheetEntries) {
+    const pattern = new RegExp(`\\b${keyword.replace(/\s+/g, '\\s+')}\\b`, 'i')
+    if (pattern.test(expandedClean)) {
+      sheetName = sheetCandidates[0]
+      break
+    }
+  }
+
+  // Also check FINANCIAL_TYPE_KEYWORDS for sheet resolution
+  if (!sheetName) {
+    for (const [canonical, keywords] of Object.entries(FINANCIAL_TYPE_KEYWORDS)) {
+      for (const kw of keywords) {
+        const pattern = new RegExp(`\\b${kw.replace(/\s+/g, '\\s+')}\\b`, 'i')
+        if (pattern.test(expandedClean)) {
+          const mapped = TREND_SHEET_MAP[canonical] || TREND_SHEET_MAP[kw]
+          if (mapped) {
+            sheetName = mapped[0]
+          } else {
+            sheetName = canonical.charAt(0).toUpperCase() + canonical.slice(1)
+          }
+          break
+        }
+      }
+      if (sheetName) break
+    }
+  }
+
+  // Try to detect data type / item from query
+  const sortedParentItems = Object.entries(PARENT_ITEM_MAP).sort((a, b) => b[0].length - a[0].length)
+  for (const [keyword, info] of sortedParentItems) {
+    const pattern = new RegExp(`\\b${keyword.replace(/\s+/g, '\\s+')}\\b`, 'i')
+    if (pattern.test(expandedClean)) {
+      itemCode = info.code
+      dataTypeFilter = keyword
+      break
+    }
+  }
+
+  // Check for common metric keywords (gp, np, etc.)
+  if (!dataTypeFilter) {
+    const metricKeywords: Record<string, string> = {
+      'gross profit': 'gross profit',
+      'net profit': 'net profit',
+      'gp': 'gross profit',
+      'np': 'net profit',
+      'income': 'income',
+      'revenue': 'revenue',
+      'cost': 'cost',
+    }
+    for (const [keyword, filter] of Object.entries(metricKeywords)) {
+      if (expandedClean.includes(keyword)) {
+        dataTypeFilter = filter
+        break
+      }
+    }
+  }
+
+  return { sheetName, dataTypeFilter, itemCode, monthCount, rawMetric }
+}
+
+// Generate a list of (year, month) tuples going backwards from the report date
+function getMonthRange(reportYear: number, reportMonth: number, count: number): Array<{ year: number; month: number }> {
+  const result: Array<{ year: number; month: number }> = []
+  let y = reportYear
+  let m = reportMonth
+  for (let i = 0; i < count; i++) {
+    result.push({ year: y, month: m })
+    m--
+    if (m < 1) {
+      m = 12
+      y--
+    }
+  }
+  return result.reverse()
+}
+
+// Handle a Trend query
+function handleTrendQuery(data: FinancialRow[], project: string, question: string, defaultMonth: string): FuzzyResult | null {
+  if (!isTrendQuery(question)) return null
+
+  const parsed = parseTrendQuery(question)
+  const projectData = data.filter(d => d._project === project)
+
+  if (projectData.length === 0) {
+    return { text: 'No data found for this project.', candidates: [] }
+  }
+
+  // Determine the report date from the data
+  let reportYear = 0
+  let reportMonth = 0
+  
+  // Try to get report date from General/Project Info
+  const generalRows = projectData.filter(d => d.Financial_Type === 'General')
+  const reportDateRow = generalRows.find(d => d.Data_Type === 'Report Date')
+  if (reportDateRow) {
+    const reportDateStr = String(reportDateRow.Value)
+    const dateMatch = reportDateStr.match(/(\d{4})-(\d{1,2})/) || 
+                      reportDateStr.match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/)
+    if (dateMatch) {
+      if (dateMatch[3]) {
+        reportYear = parseInt(dateMatch[3])
+        reportMonth = parseInt(dateMatch[2])
+      } else {
+        reportYear = parseInt(dateMatch[1])
+        reportMonth = parseInt(dateMatch[2])
+      }
+    }
+  }
+  
+  // Fallback: use the maximum year/month from actual data rows
+  if (reportYear === 0) {
+    for (const row of projectData) {
+      if (row.Sheet_Name === 'Financial Status') continue
+      const y = parseInt(row.Year) || 0
+      const m = parseInt(row.Month) || 0
+      if (y > reportYear || (y === reportYear && m > reportMonth)) {
+        reportYear = y
+        reportMonth = m
+      }
+    }
+  }
+  
+  // Last fallback
+  if (reportYear === 0) {
+    reportYear = new Date().getFullYear()
+    reportMonth = parseInt(defaultMonth) || new Date().getMonth() + 1
+  }
+
+  // Resolve the sheet name
+  const availableSheets = Array.from(new Set(projectData.map(d => d.Sheet_Name)))
+  let resolvedSheet: string | null = null
+  
+  if (parsed.sheetName) {
+    resolvedSheet = availableSheets.find(s => s.toLowerCase() === parsed.sheetName!.toLowerCase()) || null
+    
+    if (!resolvedSheet) {
+      resolvedSheet = availableSheets.find(s => 
+        s.toLowerCase().includes(parsed.sheetName!.toLowerCase()) || 
+        parsed.sheetName!.toLowerCase().includes(s.toLowerCase())
+      ) || null
+    }
+    
+    if (!resolvedSheet) {
+      const expandedClean = expandAcronyms(parsed.rawMetric).toLowerCase()
+      for (const [keyword, candidates] of Object.entries(TREND_SHEET_MAP)) {
+        const pattern = new RegExp(`\\b${keyword.replace(/\s+/g, '\\s+')}\\b`, 'i')
+        if (pattern.test(expandedClean)) {
+          for (const candidate of candidates) {
+            resolvedSheet = availableSheets.find(s => 
+              s.toLowerCase() === candidate.toLowerCase() || 
+              s.toLowerCase().includes(candidate.toLowerCase())
+            ) || null
+            if (resolvedSheet) break
+          }
+          if (resolvedSheet) break
+        }
+      }
+    }
+  }
+  
+  if (!resolvedSheet) {
+    if (parsed.dataTypeFilter && ['gross profit', 'net profit'].includes(parsed.dataTypeFilter.toLowerCase())) {
+      resolvedSheet = availableSheets.find(s => 
+        s.toLowerCase().includes('projection') || s.toLowerCase().includes('projected')
+      ) || null
+    }
+    
+    if (!resolvedSheet) {
+      const monthlySheetNames = availableSheets.filter(s => s !== 'Financial Status')
+      if (monthlySheetNames.length > 0) {
+        resolvedSheet = monthlySheetNames[0]
+      }
+    }
+  }
+
+  if (!resolvedSheet) {
+    return {
+      text: `❌ Could not determine which sheet to use for trend data.\n\nAvailable sheets: ${availableSheets.join(', ')}\n\nTry: "Trend Projection GP 6" or "Trend Accrual Preliminaries 3"`,
+      candidates: []
+    }
+  }
+
+  // Get the month range
+  const monthRange = getMonthRange(reportYear, reportMonth, parsed.monthCount)
+
+  // Filter data for the resolved sheet
+  let sheetData = projectData.filter(d => d.Sheet_Name === resolvedSheet)
+
+  // Apply data type filter
+  if (parsed.dataTypeFilter) {
+    const filterLower = parsed.dataTypeFilter.toLowerCase()
+    
+    if (parsed.itemCode) {
+      sheetData = sheetData.filter(d => d.Item_Code === parsed.itemCode)
+    } else {
+      sheetData = sheetData.filter(d => d.Data_Type.toLowerCase().includes(filterLower))
+    }
+  }
+
+  if (sheetData.length === 0) {
+    const allDataTypes = Array.from(new Set(
+      projectData.filter(d => d.Sheet_Name === resolvedSheet).map(d => `${d.Item_Code}: ${d.Data_Type}`)
+    )).sort()
+
+    let msg = `❌ No matching data found in "${resolvedSheet}" sheet`
+    if (parsed.dataTypeFilter) msg += ` for "${parsed.dataTypeFilter}"`
+    msg += '.\n\n'
+    msg += `**Available items in ${resolvedSheet}:**\n`
+    msg += allDataTypes.slice(0, 20).map(dt => `• ${dt}`).join('\n')
+    if (allDataTypes.length > 20) msg += `\n• ... and ${allDataTypes.length - 20} more`
+    
+    return { text: msg, candidates: [] }
+  }
+
+  const matchedDataType = sheetData[0]?.Data_Type || parsed.dataTypeFilter || 'Unknown'
+  const matchedItemCode = parsed.itemCode || sheetData[0]?.Item_Code || ''
+
+  // Collect values for each month
+  const trendData: Array<{ year: number; month: number; value: number; hasData: boolean }> = []
+
+  for (const { year, month } of monthRange) {
+    const monthRows = sheetData.filter(d => 
+      parseInt(d.Year) === year && parseInt(d.Month) === month
+    )
+    
+    if (monthRows.length > 0) {
+      const total = monthRows.reduce((sum, d) => sum + toNumber(d.Value), 0)
+      trendData.push({ year, month, value: total, hasData: true })
+    } else {
+      trendData.push({ year, month, value: 0, hasData: false })
+    }
+  }
+
+  const hasAnyData = trendData.some(d => d.hasData)
+  if (!hasAnyData) {
+    return {
+      text: `❌ No trend data found for the requested ${parsed.monthCount} months.\n\nThe data may not contain monthly records for this date range.`,
+      candidates: []
+    }
+  }
+
+  const monthNames = ['', 'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+  const itemLabel = matchedItemCode ? ` (Item ${matchedItemCode})` : ''
+  
+  const dataPoints = trendData.filter(d => d.hasData)
+  const firstValue = dataPoints.length > 0 ? dataPoints[0].value : 0
+  const lastValue = dataPoints.length > 0 ? dataPoints[dataPoints.length - 1].value : 0
+  const trendDiff = lastValue - firstValue
+  const trendPct = firstValue !== 0 ? (trendDiff / Math.abs(firstValue)) * 100 : 0
+  const trendArrow = trendDiff > 0 ? '↑' : trendDiff < 0 ? '↓' : '→'
+  const trendSign = trendDiff > 0 ? '+' : ''
+
+  let response = `## Trend: ${matchedDataType}${itemLabel} (Last ${parsed.monthCount} Months)\n\n`
+  response += `**Sheet:** ${resolvedSheet}\n`
+  response += `**Period:** ${monthNames[monthRange[0].month]} ${monthRange[0].year} → ${monthNames[monthRange[monthRange.length-1].month]} ${monthRange[monthRange.length-1].year}\n\n`
+
+  response += `| Month | ${matchedDataType} ('000) |\n`
+  response += `|-------|${'-'.repeat(Math.max(matchedDataType.length + 8, 20))}|\n`
+
+  for (const point of trendData) {
+    const monthLabel = `${monthNames[point.month]} ${point.year}`
+    if (point.hasData) {
+      response += `| ${monthLabel} | ${formatCurrency(point.value)} |\n`
+    } else {
+      response += `| ${monthLabel} | — |\n`
+    }
+  }
+
+  response += `\n**Trend:** ${trendArrow} ${formatCurrency(Math.abs(trendDiff))} (${trendSign}${trendPct.toFixed(1)}%)\n`
+  response += `\n*Values in thousands ('000)*`
+
+  return { text: response, candidates: [] }
+}
+
+// ============================================
 // Comparison Query Handler
 // ============================================
 
@@ -2069,6 +2403,10 @@ function answerQuestion(data: FinancialRow[], project: string, question: string,
   // Step 0a: Check if this is a Total query — handle with dedicated logic
   const totalResult = handleTotalQuery(data, project, question, defaultMonth)
   if (totalResult) return totalResult
+
+  // Step 0ab: Check if this is a Trend query — handle with dedicated logic
+  const trendResult = handleTrendQuery(data, project, question, defaultMonth)
+  if (trendResult) return trendResult
 
   // Step 0b: Check if this is a comparison query — handle it with dedicated logic
   const comparisonResult = handleComparisonQuery(data, project, question, defaultMonth)
