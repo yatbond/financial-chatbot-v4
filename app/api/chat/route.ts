@@ -150,6 +150,42 @@ function expandAcronyms(text: string): string {
   return words.map(word => ACRONYM_MAP[word] || word).join(' ')
 }
 
+// Stopwords that should NOT contribute to match scoring
+// These are common words that appear in many Financial Types and create false matches
+const STOPWORDS = new Set([
+  'as', 'at', 'the', 'and', 'or', 'for', 'in', 'on', 'to', 'of', 'a', 'an',
+  'is', 'are', 'was', 'were', 'be', 'been', 'being', 'have', 'has', 'had',
+  'do', 'does', 'did', 'will', 'would', 'could', 'should', 'may', 'might',
+  'by', 'from', 'with', 'about', 'into', 'through', 'during', 'before',
+  'after', 'above', 'below', 'between', 'under', 'again', 'further', 'then',
+  'once', 'here', 'there', 'when', 'where', 'why', 'how', 'all', 'each',
+  'few', 'more', 'most', 'other', 'some', 'such', 'no', 'nor', 'not', 'only',
+  'own', 'same', 'so', 'than', 'too', 'very', 'can', 'just', 'but', 'now'
+])
+
+// Primary keywords for Financial Type matching (10x weight)
+// These are the KEY differentiators between Financial Types
+const FINANCIAL_TYPE_KEYWORDS: Record<string, string[]> = {
+  'projection': ['projection', 'projected'],
+  'revision': ['revision', 'rev'],
+  'business plan': ['business plan', 'budget', 'bp'],
+  'wip': ['wip', 'audit'],
+  'committed': ['committed'],
+  'cash flow': ['cash flow', 'cashflow', 'cf'],
+  'tender': ['tender'],
+  'accrual': ['accrual', 'accrued'],
+  '1st working budget': ['1st working budget', 'first working', 'working budget'],
+}
+
+// Check if a word is a primary Financial Type keyword
+function isFinancialTypeKeyword(word: string): boolean {
+  const lowerWord = word.toLowerCase()
+  for (const keywords of Object.values(FINANCIAL_TYPE_KEYWORDS)) {
+    if (keywords.includes(lowerWord)) return true
+  }
+  return false
+}
+
 // Helper to convert Value to number safely
 function toNumber(val: number | string): number {
   if (typeof val === 'number') return val
@@ -2114,32 +2150,56 @@ function answerQuestion(data: FinancialRow[], project: string, question: string,
   // Step 4: Extract Financial_Type from question (find closest match)
   // IMPORTANT: "projected" should map to Financial_Type like "Projection as at"
   // We should NOT skip Financial_Type just because it contains a Sheet_Name
+  // Filter out stopwords when matching to avoid false positives
   let targetFinType: string | undefined
   let targetDataType: string | undefined
-  for (const ft of financialTypes) {
-    const ftLower = ft.toLowerCase()
-    // Check if any question word matches any Financial_Type word
-    // IMPORTANT: Keep short words like "np" which may be acronyms
-    const ftWords = ftLower.split(/\s+/).filter(w => w.length > 0)
-    for (const qWord of questionWords) {
-      for (const ftWord of ftWords) {
-        // Exact word match OR word contains substring with 50%+ threshold
-        if (qWord === ftWord) {
-          targetFinType = ft
-          break
-        }
-        if (ftWord.includes(qWord) && qWord.length >= ftWord.length * 0.5) {
-          targetFinType = ft
-          break
-        }
+  
+  // First, try to match PRIMARY Financial Type keywords (projection, revision, budget, etc.)
+  // These get highest priority
+  for (const qWord of questionWords) {
+    if (STOPWORDS.has(qWord)) continue  // Skip stopwords
+    if (!isFinancialTypeKeyword(qWord)) continue  // Skip non-primary keywords
+    
+    for (const ft of financialTypes) {
+      const ftLower = ft.toLowerCase()
+      if (ftLower.includes(qWord)) {
+        targetFinType = ft
+        break
       }
-      if (targetFinType) break
     }
     if (targetFinType) break
   }
-  // If no match found, use fuzzy matching
+  
+  // If no primary keyword match, try general matching (excluding stopwords)
+  if (!targetFinType) {
+    for (const ft of financialTypes) {
+      const ftLower = ft.toLowerCase()
+      // Check if any SIGNIFICANT question word matches any Financial_Type word
+      // IMPORTANT: Keep short words like "np" which may be acronyms, but exclude stopwords
+      const ftWords = ftLower.split(/\s+/).filter(w => w.length > 0 && !STOPWORDS.has(w))
+      for (const qWord of questionWords) {
+        if (STOPWORDS.has(qWord)) continue  // Skip stopwords
+        for (const ftWord of ftWords) {
+          // Exact word match OR word contains substring with 50%+ threshold
+          if (qWord === ftWord) {
+            targetFinType = ft
+            break
+          }
+          if (ftWord.includes(qWord) && qWord.length >= ftWord.length * 0.5) {
+            targetFinType = ft
+            break
+          }
+        }
+        if (targetFinType) break
+      }
+      if (targetFinType) break
+    }
+  }
+  
+  // If no match found, use fuzzy matching (excluding stopwords)
   if (!targetFinType) {
     for (const word of questionWords) {
+      if (STOPWORDS.has(word)) continue  // Skip stopwords
       const match = findClosestMatch(word, financialTypes)
       if (match) {
         targetFinType = match
@@ -2353,6 +2413,10 @@ function answerQuestion(data: FinancialRow[], project: string, question: string,
   // Create candidates for clickable selection
   // ALWAYS score ALL project data records and show top 10 best matches
   // Include keyword matching across ALL fields for comprehensive scoring
+  
+  // Filter out stopwords from question words for scoring (but keep for display)
+  const significantQuestionWords = questionWords.filter(w => !STOPWORDS.has(w))
+  
   const allCandidates = projectData.map((d) => {
     let matchScore = 0
     const matchedKeywords: string[] = []
@@ -2360,45 +2424,54 @@ function answerQuestion(data: FinancialRow[], project: string, question: string,
     // Build combined text from all searchable fields
     const combinedText = `${d.Sheet_Name} ${d.Financial_Type} ${d.Data_Type} ${d.Item_Code} ${d.Month} ${d.Year}`.toLowerCase()
 
-    // Check each question word against ALL fields
-    for (const qWord of questionWords) {
-      // Financial_Type match
+    // Check each SIGNIFICANT question word against ALL fields
+    // STOPWORDS are EXCLUDED from scoring to prevent false matches
+    for (const qWord of significantQuestionWords) {
+      // Financial_Type match - 10x weight for PRIMARY keywords
       if (d.Financial_Type.toLowerCase().includes(qWord)) {
-        matchScore += 5
+        if (isFinancialTypeKeyword(qWord)) {
+          // PRIMARY Financial Type keyword (projection, revision, budget, etc.) - 10x weight
+          matchScore += 50
+        } else {
+          // Non-primary word in Financial_Type - normal weight
+          matchScore += 5
+        }
         matchedKeywords.push(qWord)
       }
 
       // Data_Type match (important!)
       if (d.Data_Type.toLowerCase().includes(qWord)) {
         matchScore += 8
-        matchedKeywords.push(qWord)
+        if (!matchedKeywords.includes(qWord)) matchedKeywords.push(qWord)
       }
 
       // Item_Code match
       if (d.Item_Code.toLowerCase().includes(qWord)) {
         matchScore += 3
-        matchedKeywords.push(qWord)
+        if (!matchedKeywords.includes(qWord)) matchedKeywords.push(qWord)
       }
 
       // Sheet_Name match
       if (d.Sheet_Name.toLowerCase().includes(qWord)) {
         matchScore += 2
-        matchedKeywords.push(qWord)
+        if (!matchedKeywords.includes(qWord)) matchedKeywords.push(qWord)
       }
     }
 
-    // Explicit Financial_Type match (high priority)
-    if (targetFinType && d.Financial_Type === targetFinType) matchScore += 40
+    // Explicit Financial_Type match (high priority) - 10x weight boost
+    if (targetFinType && d.Financial_Type === targetFinType) {
+      matchScore += 100  // Increased from 40 to 100 for explicit match
+    }
     else if (targetFinType && d.Financial_Type.toLowerCase().includes(targetFinType.toLowerCase())) {
-      matchScore += 30
-      matchedKeywords.push(targetFinType)
+      matchScore += 80   // Increased from 30 to 80 for partial match
+      if (!matchedKeywords.includes(targetFinType)) matchedKeywords.push(targetFinType)
     }
 
     // Explicit Data_Type match (high priority)
     if (targetDataType && d.Data_Type === targetDataType) matchScore += 35
     else if (targetDataType && d.Data_Type.toLowerCase().includes(targetDataType.toLowerCase())) {
       matchScore += 25
-      matchedKeywords.push(targetDataType)
+      if (!matchedKeywords.includes(targetDataType)) matchedKeywords.push(targetDataType)
     }
 
     // Month match
