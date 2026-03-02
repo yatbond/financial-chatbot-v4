@@ -1784,6 +1784,59 @@ function matchFinancialType(text: string, financialTypes: string[]): string | nu
 
 // Extract the metric (Data_Type) from comparison text
 function extractComparisonMetric(expandedQuestion: string, dataTypes: string[]): string | null {
+  const lowerQ = expandedQuestion.toLowerCase()
+
+  // First: Check known acronyms for exact parent-level matching
+  // This prevents matching child items (e.g., "Contract Works" instead of "Subcontractor")
+  const compareMetricMap: Record<string, string> = {
+    'subcontractor': 'subcontractor',
+    'subbie': 'subcontractor',
+    'subcon': 'subcontractor',
+    'preliminaries': 'preliminaries',
+    'prelim': 'preliminaries',
+    'materials': 'materials',
+    'material': 'materials',
+    'plant': 'plant and machinery',
+    'machinery': 'plant and machinery',
+    'labour': 'labour',
+    'staff': 'supervision',
+    'supervision': 'supervision',
+    'cost': 'less : cost',
+    'total cost': 'less : cost',
+    'gross profit': 'gross profit',
+    'gp': 'gross profit',
+    'net profit': 'net profit',
+    'np': 'net profit',
+    'income': 'income',
+    'revenue': 'income',
+    'overhead': 'overhead',
+    'contract works': 'contract works',
+    'variation': 'variation',
+    'vo': 'variation',
+    'claim': 'claim',
+    'claims': 'claim',
+  }
+
+  for (const [keyword, targetName] of Object.entries(compareMetricMap)) {
+    if (lowerQ.includes(keyword)) {
+      // Find Data_Type that matches the target name at the right level
+      // Prefer shorter matches (parent level) over longer matches (child level)
+      const matches = dataTypes.filter(dt => {
+        const dtLower = dt.toLowerCase()
+        // Match if Data_Type contains the target as a segment
+        return dtLower.includes(' - ' + targetName + ' -') ||
+               dtLower.includes(' - ' + targetName) ||
+               dtLower === targetName ||
+               dtLower.endsWith(' ' + targetName)
+      })
+      if (matches.length > 0) {
+        // Sort by length - shortest first (parent level)
+        matches.sort((a, b) => a.length - b.length)
+        return matches[0]
+      }
+    }
+  }
+
   // Known acronym-to-DataType mappings
   const acronymDataMap: Record<string, string[]> = {
     'gross profit': ['gross profit', 'acc. gross profit'],
@@ -1793,9 +1846,7 @@ function extractComparisonMetric(expandedQuestion: string, dataTypes: string[]):
     'income': ['income', 'gross profit'],
   }
 
-  const lowerQ = expandedQuestion.toLowerCase()
-
-  // Check known mappings first
+  // Check known mappings
   for (const [keyword, expansions] of Object.entries(acronymDataMap)) {
     if (lowerQ.includes(keyword)) {
       for (const expansion of expansions) {
@@ -1805,7 +1856,7 @@ function extractComparisonMetric(expandedQuestion: string, dataTypes: string[]):
     }
   }
 
-  // Try word-by-word matching
+  // Try word-by-word matching (fallback)
   const questionWords = lowerQ.split(/\s+/).filter(w => w.length > 2)
   let bestMatch: string | null = null
   let bestScore = 0
