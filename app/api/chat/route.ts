@@ -208,6 +208,24 @@ const STOPWORDS = new Set([
   'own', 'same', 'so', 'than', 'too', 'very', 'can', 'just', 'but', 'now'
 ])
 
+// ============================================
+// Trend Context Cache (for Detail drill-down)
+// ============================================
+interface TrendContext {
+  itemCode: string
+  itemName: string
+  sheetName: string
+  financialType: string
+  monthRange: Array<{ year: number; month: number }>
+  monthCount: number
+  project: string
+  children: Array<{ code: string; name: string }>  // Cached children list
+}
+
+// Global cache for last Trend context (per project)
+const trendContextCache: Map<string, TrendContext> = new Map()
+let lastDetailPage: number = 0  // Track pagination for "more" command
+
 // Primary keywords for Financial Type matching (10x weight)
 // These are the KEY differentiators between Financial Types
 // Maps canonical Financial_Type names to their user-facing keyword variants
@@ -1298,6 +1316,200 @@ function handleTrendQuery(data: FinancialRow[], project: string, question: strin
 
   response += `\n**Trend:** ${trendArrow} ${formatCurrency(Math.abs(trendDiff))} (${trendSign}${trendPct.toFixed(1)}%)\n`
   response += `\n*Values in thousands ('000)*`
+
+  // Save context for Detail drill-down
+  // Find children items (one level down)
+  const children: Array<{ code: string; name: string }> = []
+  const childPrefix = matchedItemCode + '.'
+  const seenChildCodes = new Set<string>()
+  
+  for (const row of projectData) {
+    if (row.Sheet_Name === resolvedSheet && row.Item_Code.startsWith(childPrefix)) {
+      // Get direct child only (e.g., "2.1" not "2.1.1" when parent is "2")
+      const remaining = row.Item_Code.slice(childPrefix.length)
+      const nextDot = remaining.indexOf('.')
+      const childCode = nextDot === -1 ? row.Item_Code : row.Item_Code.slice(0, childPrefix.length + nextDot)
+      
+      if (!seenChildCodes.has(childCode)) {
+        seenChildCodes.add(childCode)
+        children.push({ code: childCode, name: row.Data_Type })
+      }
+    }
+  }
+  
+  // Sort children by Item_Code
+  children.sort((a, b) => {
+    const aParts = a.code.split('.').map(Number)
+    const bParts = b.code.split('.').map(Number)
+    for (let i = 0; i < Math.max(aParts.length, bParts.length); i++) {
+      const diff = (aParts[i] || 0) - (bParts[i] || 0)
+      if (diff !== 0) return diff
+    }
+    return 0
+  })
+
+  trendContextCache.set(project, {
+    itemCode: matchedItemCode,
+    itemName: matchedDataType,
+    sheetName: resolvedSheet,
+    financialType: sheetData[0]?.Financial_Type || '',
+    monthRange,
+    monthCount: parsed.monthCount,
+    project,
+    children
+  })
+
+  return { text: response, candidates: [] }
+}
+
+// ============================================
+// Detail Trend Handler (drill-down from Trend)
+// ============================================
+
+function handleDetailTrend(
+  data: FinancialRow[], 
+  project: string, 
+  question: string
+): FuzzyResult | null {
+  const lowerQ = question.toLowerCase().trim()
+  
+  // Check if it's a detail/more command
+  const isDetail = lowerQ === 'detail'
+  const isMore = lowerQ === 'more'
+  const detailMatch = lowerQ.match(/^detail\s+(\d+)$/)
+  
+  if (!isDetail && !isMore && !detailMatch) return null
+  
+  const context = trendContextCache.get(project)
+  if (!context) {
+    return { 
+      text: '❌ No previous Trend query found. Please run a Trend query first (e.g., "trend cashflow cost")', 
+      candidates: [] 
+    }
+  }
+
+  // Handle "detail N" - drill down into specific child
+  if (detailMatch) {
+    const childIndex = parseInt(detailMatch[1]) - 1
+    if (childIndex < 0 || childIndex >= context.children.length) {
+      return {
+        text: `❌ Invalid detail number. Please use a number between 1 and ${context.children.length}.`,
+        candidates: []
+      }
+    }
+    
+    const selectedChild = context.children[childIndex]
+    const projectData = data.filter(d => d._project === project)
+    
+    // Find children of the selected child
+    const grandChildren: Array<{ code: string; name: string }> = []
+    const grandChildPrefix = selectedChild.code + '.'
+    const seenGrandChildCodes = new Set<string>()
+    
+    for (const row of projectData) {
+      if (row.Sheet_Name === context.sheetName && row.Item_Code.startsWith(grandChildPrefix)) {
+        const remaining = row.Item_Code.slice(grandChildPrefix.length)
+        const nextDot = remaining.indexOf('.')
+        const grandChildCode = nextDot === -1 ? row.Item_Code : row.Item_Code.slice(0, grandChildPrefix.length + nextDot)
+        
+        if (!seenGrandChildCodes.has(grandChildCode)) {
+          seenGrandChildCodes.add(grandChildCode)
+          grandChildren.push({ code: grandChildCode, name: row.Data_Type })
+        }
+      }
+    }
+    
+    if (grandChildren.length === 0) {
+      return {
+        text: `❌ No sub-items found for Item ${selectedChild.code} (${selectedChild.name}). This is a leaf-level item.`,
+        candidates: []
+      }
+    }
+    
+    // Sort grandChildren
+    grandChildren.sort((a, b) => {
+      const aParts = a.code.split('.').map(Number)
+      const bParts = b.code.split('.').map(Number)
+      for (let i = 0; i < Math.max(aParts.length, bParts.length); i++) {
+        const diff = (aParts[i] || 0) - (bParts[i] || 0)
+        if (diff !== 0) return diff
+      }
+      return 0
+    })
+    
+    // Update context to the selected child
+    context.itemCode = selectedChild.code
+    context.itemName = selectedChild.name
+    context.children = grandChildren
+    lastDetailPage = 0
+    
+    // Fall through to display the children
+  }
+
+  // Handle "detail" or "more" - show children with pagination
+  const pageSize = 20
+  const startIndex = isMore ? (lastDetailPage + 1) * pageSize : 0
+  const page = isMore ? lastDetailPage + 1 : 0
+  lastDetailPage = page
+  
+  if (startIndex >= context.children.length) {
+    return {
+      text: '❌ No more sub-items to display.',
+      candidates: []
+    }
+  }
+
+  const childrenToShow = context.children.slice(startIndex, startIndex + pageSize)
+  const hasMore = startIndex + pageSize < context.children.length
+
+  const projectData = data.filter(d => d._project === project)
+  const monthNames = ['', 'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+
+  let response = `## Detail: ${context.itemName} (Item ${context.itemCode}) - Sub-Items\n\n`
+  response += `**Sheet:** ${context.sheetName}\n`
+  response += `**Period:** ${monthNames[context.monthRange[0].month]} ${context.monthRange[0].year} → ${monthNames[context.monthRange[context.monthRange.length-1].month]} ${context.monthRange[context.monthRange.length-1].year}\n\n`
+
+  if (context.children.length === 0) {
+    return {
+      text: `❌ No sub-items found for Item ${context.itemCode} (${context.itemName}). This is a leaf-level item.`,
+      candidates: []
+    }
+  }
+
+  let tableIndex = startIndex
+  for (const child of childrenToShow) {
+    tableIndex++
+    response += `### [${tableIndex}] Item ${child.code} - ${child.name}\n`
+    response += `| Month | Value ('000) |\n`
+    response += `|-------|-------------|\n`
+
+    for (const { year, month } of context.monthRange) {
+      const monthRows = projectData.filter(d => 
+        d.Sheet_Name === context.sheetName &&
+        d.Item_Code === child.code &&
+        parseInt(d.Year) === year &&
+        parseInt(d.Month) === month
+      )
+      
+      const monthLabel = `${monthNames[month]} ${year}`
+      if (monthRows.length > 0) {
+        const value = toNumber(monthRows[0].Value)
+        const sourceRef = ` ${formatSourceRef(monthRows[0])}`
+        response += `| ${monthLabel} | ${formatCurrency(value)}${sourceRef} |\n`
+      } else {
+        response += `| ${monthLabel} | — |\n`
+      }
+    }
+    response += '\n'
+  }
+
+  // Add navigation hints
+  response += `---\n`
+  if (hasMore) {
+    response += `💡 Type **'more'** for next ${Math.min(pageSize, context.children.length - startIndex - pageSize)} sub-items\n`
+  }
+  response += `💡 Type **'detail N'** to drill down into sub-item N (show its children)\n`
+  response += `*Showing ${startIndex + 1}-${startIndex + childrenToShow.length} of ${context.children.length} sub-items*`
 
   return { text: response, candidates: [] }
 }
@@ -2605,6 +2817,10 @@ function answerQuestion(data: FinancialRow[], project: string, question: string,
   // Step 0a: Check if this is a Total query — handle with dedicated logic
   const totalResult = handleTotalQuery(data, project, question, defaultMonth)
   if (totalResult) return totalResult
+
+  // Step 0a: Check if this is a Detail/More command for Trend drill-down
+  const detailTrendResult = handleDetailTrend(data, project, question)
+  if (detailTrendResult) return detailTrendResult
 
   // Step 0ab: Check if this is a Trend query — handle with dedicated logic
   const trendResult = handleTrendQuery(data, project, question, defaultMonth)
