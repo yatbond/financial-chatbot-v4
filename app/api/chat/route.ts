@@ -1903,7 +1903,7 @@ function handleComparisonQuery(data: FinancialRow[], project: string, question: 
     label2 = `${finType} (${monthNames[parseInt(date2.month || '1')] || ''} ${date2.year || ''})`
   } else {
     // Compare different Financial_Types (existing logic)
-    const getValueForType = (finType: string, date?: { month: string | null; year: string | null }): { total: number; rows: FinancialRow[] } => {
+    const getValueForType = (finType: string, date?: { month?: string | null; year?: string | null }): { total: number; rows: FinancialRow[] } => {
       let filtered = projectData.filter(d => d.Sheet_Name === targetSheet)
       filtered = filtered.filter(d => d.Financial_Type === finType)
       if (targetDataType) {
