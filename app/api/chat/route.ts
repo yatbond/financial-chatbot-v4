@@ -226,6 +226,22 @@ interface TrendContext {
 const trendContextCache: Map<string, TrendContext> = new Map()
 let lastDetailPage: number = 0  // Track pagination for "more" command
 
+// ============================================
+// Compare Context Cache (for Detail drill-down)
+// ============================================
+interface CompareContext {
+  finType1: string
+  finType2: string
+  targetSheet: string
+  targetDataType: string | null
+  project: string
+  children: Array<{ code: string; name: string }>  // Cached children list
+}
+
+// Global cache for last Compare context (per project)
+const compareContextCache: Map<string, CompareContext> = new Map()
+let lastCompareDetailPage: number = 0  // Track pagination for "more" command
+
 // Primary keywords for Financial Type matching (10x weight)
 // These are the KEY differentiators between Financial Types
 // Maps canonical Financial_Type names to their user-facing keyword variants
@@ -1515,6 +1531,102 @@ function handleDetailTrend(
 }
 
 // ============================================
+// Detail Compare Handler (drill-down from Compare)
+// ============================================
+
+function handleDetailCompare(
+  data: FinancialRow[], 
+  project: string, 
+  question: string,
+  defaultMonth: string
+): FuzzyResult | null {
+  const lowerQ = question.toLowerCase().trim()
+  
+  // Only handle "detail" or "more" after a compare query (not "detail N" which goes to Trend)
+  // But we need to check if there's a Compare context first
+  const context = compareContextCache.get(project)
+  if (!context) return null
+  
+  const isDetail = lowerQ === 'detail'
+  const isMore = lowerQ === 'more'
+  
+  if (!isDetail && !isMore) return null
+
+  const projectData = data.filter(d => d._project === project)
+  
+  // Handle pagination
+  const pageSize = 20
+  const startIndex = isMore ? (lastCompareDetailPage + 1) * pageSize : 0
+  const page = isMore ? lastCompareDetailPage + 1 : 0
+  lastCompareDetailPage = page
+  
+  if (startIndex >= context.children.length) {
+    return {
+      text: '❌ No more sub-items to display.',
+      candidates: []
+    }
+  }
+
+  const childrenToShow = context.children.slice(startIndex, startIndex + pageSize)
+  const hasMore = startIndex + pageSize < context.children.length
+
+  let response = `## Detail: Comparing Sub-Items\n\n`
+  response += `**Comparing:** ${context.finType1} vs ${context.finType2}\n`
+  response += `**Metric:** ${context.targetDataType || 'All items'}\n\n`
+
+  // Parse dates from the original comparison (if any)
+  // For simplicity, we'll show the comparison for each child item
+
+  let tableIndex = startIndex
+  for (const child of childrenToShow) {
+    tableIndex++
+    
+    // Get values for this child from both Financial Types
+    let filtered1 = projectData.filter(d => 
+      d.Sheet_Name === context.targetSheet &&
+      d.Financial_Type === context.finType1 &&
+      d.Item_Code === child.code
+    )
+    let filtered2 = projectData.filter(d => 
+      d.Sheet_Name === context.targetSheet &&
+      d.Financial_Type === context.finType2 &&
+      d.Item_Code === child.code
+    )
+    
+    const value1 = filtered1.reduce((sum, d) => sum + toNumber(d.Value), 0)
+    const value2 = filtered2.reduce((sum, d) => sum + toNumber(d.Value), 0)
+    
+    if (value1 === 0 && value2 === 0) continue  // Skip items with no data
+    
+    const diff = value1 - value2
+    const absDiff = Math.abs(diff)
+    const pctChange = value2 !== 0 ? (diff / Math.abs(value2)) * 100 : 0
+    const arrow = diff > 0 ? '↑' : diff < 0 ? '↓' : '→'
+    const sign = diff > 0 ? '+' : ''
+    
+    response += `### [${tableIndex}] Item ${child.code} - ${child.name}\n`
+    response += `| Type | Value ('000) |\n`
+    response += `|------|-------------|\n`
+    
+    const sourceRef1 = filtered1.length > 0 ? ` ${formatSourceRef(filtered1[0])}` : ''
+    const sourceRef2 = filtered2.length > 0 ? ` ${formatSourceRef(filtered2[0])}` : ''
+    
+    response += `| ${context.finType1} | ${formatCurrency(value1)}${sourceRef1} |\n`
+    response += `| ${context.finType2} | ${formatCurrency(value2)}${sourceRef2} |\n`
+    response += `| Diff | ${arrow} ${formatCurrency(absDiff)} (${sign}${pctChange.toFixed(1)}%) |\n\n`
+  }
+
+  // Add navigation hints
+  response += `---\n`
+  if (hasMore) {
+    response += `💡 Type **'more'** for next ${Math.min(pageSize, context.children.length - startIndex - pageSize)} sub-items\n`
+  }
+  response += `*Showing ${startIndex + 1}-${startIndex + childrenToShow.length} of ${context.children.length} sub-items*`
+
+  return { text: response, candidates: [] }
+}
+
+// ============================================
 // Comparison Query Handler
 // ============================================
 
@@ -1567,9 +1679,39 @@ function extractComparisonParts(expandedQuestion: string): { side1: string; side
 
   if (parts.length < 2) return null
 
+  let side1 = parts[0].trim()
+  let side2 = parts[1].trim()
+
+  // SMART INFERENCING: If side2 is just a date (no financial type/metric),
+  // copy the metric from side1
+  // Example: "compare committed income oct 2025 vs jan 2026"
+  // side2 = "jan 2026" should become "committed income jan 2026"
+  
+  // Check if side2 looks like just a date (month name + optional year)
+  const monthPattern = /\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec|january|february|march|april|june|july|august|september|october|november|december)\b/
+  const dateOnlyPattern = /^\s*(\d{1,2}\s*)?(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec|january|february|march|april|june|july|august|september|october|november|december)\s*(\d{2,4})?\s*$/i
+  
+  if (dateOnlyPattern.test(side2)) {
+    // side2 is just a date - extract the metric from side1
+    // Remove the "compare" prefix if present
+    let metricPart = side1.replace(/^compare\s+/i, '')
+    
+    // Find where the date starts in side1 (month name)
+    const monthMatch = metricPart.match(monthPattern)
+    if (monthMatch) {
+      // Get everything before the date
+      const dateIndex = metricPart.toLowerCase().indexOf(monthMatch[1].toLowerCase())
+      if (dateIndex > 0) {
+        const metricPrefix = metricPart.substring(0, dateIndex).trim()
+        // Construct side2 with the metric prefix
+        side2 = `${metricPrefix} ${side2}`.trim()
+      }
+    }
+  }
+
   return {
-    side1: parts[0].trim(),
-    side2: parts[1].trim(),
+    side1: side1,
+    side2: side2,
     metric: '' // Will be determined later
   }
 }
@@ -1709,33 +1851,79 @@ function handleComparisonQuery(data: FinancialRow[], project: string, question: 
   const finType1 = matchFinancialType(compParts.side1, financialTypes)
   const finType2 = matchFinancialType(compParts.side2, financialTypes)
 
-  if (!finType1 || !finType2) {
-    // Can't determine both Financial Types - fall back to normal query
-    return null
-  }
-
-  // If both sides resolve to the same Financial_Type, it's not a meaningful comparison
-  if (finType1 === finType2) return null
-
   // Extract the metric (Data_Type) to compare
   const targetDataType = extractComparisonMetric(expandedQuestion, dataTypes)
 
   // Default to Financial Status sheet for comparison
   const targetSheet = 'Financial Status'
 
-  // Helper to get the value for a specific Financial_Type
-  const getValueForType = (finType: string): { total: number; rows: FinancialRow[] } => {
-    let filtered = projectData.filter(d => d.Sheet_Name === targetSheet)
-    filtered = filtered.filter(d => d.Financial_Type === finType)
-    if (targetDataType) {
-      filtered = filtered.filter(d => d.Data_Type === targetDataType)
-    }
-    const total = filtered.reduce((sum, d) => sum + toNumber(d.Value), 0)
-    return { total, rows: filtered }
+  // Parse dates from both sides
+  const date1 = parseDate(compParts.side1, defaultMonth)
+  const date2 = parseDate(compParts.side2, defaultMonth)
+
+  // Determine comparison type: by Financial_Type or by Date
+  const compareByDate = finType1 && finType1 === finType2 && (date1.month || date2.month)
+  const compareByFinType = finType1 && finType2 && finType1 !== finType2
+
+  if (!compareByDate && !compareByFinType) {
+    // Can't determine comparison type - fall back to normal query
+    return null
   }
 
-  const result1 = getValueForType(finType1)
-  const result2 = getValueForType(finType2)
+  let result1: { total: number; rows: FinancialRow[] } = { total: 0, rows: [] }
+  let result2: { total: number; rows: FinancialRow[] } = { total: 0, rows: [] }
+  let label1 = ''
+  let label2 = ''
+
+  if (compareByDate) {
+    // Compare same Financial_Type across different dates
+    const finType = finType1!
+    
+    const getValueForDate = (date: { month: string | null; year: string | null }): { total: number; rows: FinancialRow[] } => {
+      let filtered = projectData.filter(d => d.Sheet_Name === targetSheet)
+      filtered = filtered.filter(d => d.Financial_Type === finType)
+      if (targetDataType) {
+        filtered = filtered.filter(d => d.Data_Type.toLowerCase().includes(targetDataType.toLowerCase()))
+      }
+      if (date.month) {
+        filtered = filtered.filter(d => d.Month === date.month)
+      }
+      if (date.year) {
+        filtered = filtered.filter(d => d.Year === date.year)
+      }
+      const total = filtered.reduce((sum, d) => sum + toNumber(d.Value), 0)
+      return { total, rows: filtered }
+    }
+
+    result1 = getValueForDate(date1)
+    result2 = getValueForDate(date2)
+    
+    const monthNames = ['', 'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+    label1 = `${finType} (${monthNames[parseInt(date1.month || '1')] || ''} ${date1.year || ''})`
+    label2 = `${finType} (${monthNames[parseInt(date2.month || '1')] || ''} ${date2.year || ''})`
+  } else {
+    // Compare different Financial_Types (existing logic)
+    const getValueForType = (finType: string, date?: { month: string | null; year: string | null }): { total: number; rows: FinancialRow[] } => {
+      let filtered = projectData.filter(d => d.Sheet_Name === targetSheet)
+      filtered = filtered.filter(d => d.Financial_Type === finType)
+      if (targetDataType) {
+        filtered = filtered.filter(d => d.Data_Type.toLowerCase().includes(targetDataType.toLowerCase()))
+      }
+      if (date?.month) {
+        filtered = filtered.filter(d => d.Month === date.month)
+      }
+      if (date?.year) {
+        filtered = filtered.filter(d => d.Year === date.year)
+      }
+      const total = filtered.reduce((sum, d) => sum + toNumber(d.Value), 0)
+      return { total, rows: filtered }
+    }
+
+    result1 = getValueForType(finType1!, date1.month || date1.year ? date1 : undefined)
+    result2 = getValueForType(finType2!, date2.month || date2.year ? date2 : undefined)
+    label1 = finType1!
+    label2 = finType2!
+  }
 
   // Calculate difference
   const diff = result1.total - result2.total
@@ -1746,7 +1934,7 @@ function handleComparisonQuery(data: FinancialRow[], project: string, question: 
 
   // Format response as comparison table
   const metricLabel = targetDataType || 'Total'
-  let response = `## Comparing: ${finType1} vs ${finType2}\n`
+  let response = `## Comparing: ${label1} vs ${label2}\n`
   response += `**Table:** ${targetSheet}\n`
   response += `**Metric:** ${metricLabel}\n\n`
 
@@ -1761,14 +1949,53 @@ function handleComparisonQuery(data: FinancialRow[], project: string, question: 
   // Table header
   response += `| Financial Type | ${metricLabel} |\n`
   response += `|----------------|${'-'.repeat(Math.max(metricLabel.length, 14))}|\n`
-  response += `| ${finType1} | ${formatCurrency(result1.total)}${sourceRef1} |\n`
-  response += `| ${finType2} | ${formatCurrency(result2.total)}${sourceRef2} |\n`
+  response += `| ${label1} | ${formatCurrency(result1.total)}${sourceRef1} |\n`
+  response += `| ${label2} | ${formatCurrency(result2.total)}${sourceRef2} |\n`
   response += `| Difference | ${arrow} ${formatCurrency(absDiff)} (${sign}${pctChange.toFixed(1)}%) |\n`
 
   response += `\n*Values in ('000)*`
 
-  // Still provide candidates for drill-down
+  // Find children items for Detail drill-down
+  const children: Array<{ code: string; name: string }> = []
+  const seenChildCodes = new Set<string>()
   const allRows = [...result1.rows, ...result2.rows]
+  
+  // Get unique item codes from the comparison results
+  for (const row of allRows) {
+    if (row.Item_Code && !seenChildCodes.has(row.Item_Code)) {
+      seenChildCodes.add(row.Item_Code)
+      children.push({ code: row.Item_Code, name: row.Data_Type })
+    }
+  }
+  
+  // Sort children by Item_Code
+  children.sort((a, b) => {
+    const aParts = a.code.split('.').map(Number)
+    const bParts = b.code.split('.').map(Number)
+    for (let i = 0; i < Math.max(aParts.length, bParts.length); i++) {
+      const diff = (aParts[i] || 0) - (bParts[i] || 0)
+      if (diff !== 0) return diff
+    }
+    return 0
+  })
+
+  // Save context for Detail drill-down
+  compareContextCache.set(project, {
+    finType1: compareByDate ? finType1! : finType1!,
+    finType2: compareByDate ? finType1! : finType2!,
+    targetSheet,
+    targetDataType,
+    project,
+    children
+  })
+  lastCompareDetailPage = 0
+
+  // Add hint for Detail command if there are children
+  if (children.length > 0) {
+    response += `\n\n💡 Type **'detail'** to compare sub-items`
+  }
+
+  // Still provide candidates for drill-down
   const candidates = allRows.slice(0, 10).map((d, i) => ({
     id: i + 1,
     value: d.Value,
@@ -2825,6 +3052,10 @@ function answerQuestion(data: FinancialRow[], project: string, question: string,
   // Step 0ab: Check if this is a Trend query — handle with dedicated logic
   const trendResult = handleTrendQuery(data, project, question, defaultMonth)
   if (trendResult) return trendResult
+
+  // Step 0b1: Check if this is a Detail Compare command (after Compare query)
+  const detailCompareResult = handleDetailCompare(data, project, question, defaultMonth)
+  if (detailCompareResult) return detailCompareResult
 
   // Step 0b: Check if this is a comparison query — handle it with dedicated logic
   const comparisonResult = handleComparisonQuery(data, project, question, defaultMonth)
