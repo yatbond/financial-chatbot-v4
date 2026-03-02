@@ -1137,7 +1137,18 @@ function handleTrendQuery(data: FinancialRow[], project: string, question: strin
   if (sheetData.length === 0) {
     const allDataTypes = Array.from(new Set(
       projectData.filter(d => d.Sheet_Name === resolvedSheet).map(d => `${d.Item_Code}: ${d.Data_Type}`)
-    )).sort()
+    )).sort((a, b) => {
+      // Sort by item code numerically (e.g., 2.10 should come after 2.9)
+      const codeA = a.split(':')[0]
+      const codeB = b.split(':')[0]
+      const partsA = codeA.split('.').map(Number)
+      const partsB = codeB.split('.').map(Number)
+      for (let i = 0; i < Math.max(partsA.length, partsB.length); i++) {
+        const diff = (partsA[i] || 0) - (partsB[i] || 0)
+        if (diff !== 0) return diff
+      }
+      return 0
+    })
 
     let msg = `❌ No matching data found in "${resolvedSheet}" sheet`
     if (parsed.dataTypeFilter) msg += ` for "${parsed.dataTypeFilter}"`
