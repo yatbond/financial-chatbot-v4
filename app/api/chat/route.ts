@@ -1600,6 +1600,11 @@ const PARENT_ITEM_MAP: Record<string, { code: string; name: string }> = {
   'preliminary': { code: '2.1', name: 'Preliminaries' },
   'total prelim': { code: '2.1', name: 'Preliminaries' },
   
+  // Item 2.1.1 - Manpower (Mgt. & Supervision)
+  'supervision': { code: '2.1.1', name: 'Manpower (Mgt. & Supervision)' },
+  'mgt supervision': { code: '2.1.1', name: 'Manpower (Mgt. & Supervision)' },
+  'management supervision': { code: '2.1.1', name: 'Manpower (Mgt. & Supervision)' },
+  
   // Item 2.2 - Materials
   'materials': { code: '2.2', name: 'Materials' },
   'material': { code: '2.2', name: 'Materials' },
