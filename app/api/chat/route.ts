@@ -81,15 +81,19 @@ import { google } from 'googleapis'
  *   1st working budget, first working   → "1st Working Budget"
  *
  * DATA TYPE / ITEM SHORTCUTS (ACRONYM_MAP below):
- *   gp                → Gross Profit
- *   np                → Net Profit
- *   prelim            → Preliminaries
- *   subcon, sub       → Subcontractor
- *   rebar             → Reinforcement
+ *   gp                → Gross Profit (Item 3)
+ *   np, net profit    → Net Profit (Item 7)
+ *   cost, total cost  → Less : Cost (Item 2)
+ *   prelim, preliminary, preliminaries → Preliminaries (Item 2.1)
+ *   material, materials, material cost → Materials (Item 2.2)
+ *   plant, machinery, all plant        → Plant & Machinery (Item 2.3)
+ *   subcon, sub, subbie, subcontractors → Subcontractor (Item 2.4)
+ *   contract works, subbie/subcon contract works → Contract works (Item 2.4.1)
+ *   vo, variation, subbie/subcon vo/variation → Variation (Item 2.4.2)
+ *   claim, claims, subbie/subcon claim → Claim (Item 2.4.3)
+ *   rebar             → Reinforcement (Item 2.6)
  *   staff             → Manpower (Mgt. & Supervision)
  *   labour, labor     → Manpower (Labour)
- *   material          → Materials
- *   plant, machinery  → Plant and Machinery
  *   profit, income    → Gross Profit
  *   loss              → Net Loss
  *
@@ -103,6 +107,7 @@ const ACRONYM_MAP: Record<string, string> = {
   // === Data Type shortcuts ===
   'gp': 'gross profit',
   'np': 'net profit',
+  'net profit': 'net profit',
 
   // === Financial Type shortcuts ===
   'bp': 'business plan',
@@ -119,19 +124,60 @@ const ACRONYM_MAP: Record<string, string> = {
   'cashflow': 'cash flow',
   'cash': 'cash flow',
 
-  // === Item / category shortcuts ===
+  // === Item / category shortcuts (Item_Code 2.1 - Preliminaries) ===
+  'prelim': 'preliminaries',
+  'preliminary': 'preliminaries',
+  'preliminaries': 'preliminaries',
+
+  // === Item / category shortcuts (Item_Code 2 - Less : Cost) ===
+  'cost': 'less cost',
+  'total cost': 'less cost',
+
+  // === Item / category shortcuts (Item_Code 2.2 - Materials) ===
+  'material': 'materials',
+  'materials': 'materials',
+  'material cost': 'materials',
+
+  // === Item / category shortcuts (Item_Code 2.3 - Plant & Machinery) ===
+  'plant': 'plant and machinery',
+  'machinery': 'plant and machinery',
+  'all plant': 'plant and machinery',
+
+  // === Item / category shortcuts (Item_Code 2.4 - Subcontractor) ===
   'subcon': 'subcontractor',
   'sub': 'subcontractor',
   'subcontractor': 'subcontractor',
+  'subcontractors': 'subcontractor',
+  'subbie': 'subcontractor',
+
+  // === Item / category shortcuts (Item_Code 2.4.1 - Contract works) ===
+  'contract works': 'contract works',
+  'subbie contract works': 'contract works',
+  'subcon contract works': 'contract works',
+
+  // === Item / category shortcuts (Item_Code 2.4.2 - Variation) ===
+  'vo': 'variation',
+  'variations': 'variation',
+  'subbie vo': 'variation',
+  'subcon vo': 'variation',
+  'subbie variation': 'variation',
+  'subcon variation': 'variation',
+  'subbie variations': 'variation',
+  'subcon variations': 'variation',
+
+  // === Item / category shortcuts (Item_Code 2.4.3 - Claim) ===
+  'claim': 'claim',
+  'claims': 'claim',
+  'subbie claim': 'claim',
+  'subcon claim': 'claim',
+  'subbie claims': 'claim',
+  'subcon claims': 'claim',
+
+  // === Other shortcuts ===
   'rebar': 'reinforcement',
   'staff': 'manpower (mgt. & supervision)',
   'labour': 'manpower (labour)',
   'labor': 'manpower (labour)',
-  'prelim': 'preliminaries',
-  'preliminary': 'preliminaries',
-  'material': 'materials',
-  'plant': 'plant and machinery',
-  'machinery': 'plant and machinery',
   'lab': 'labour',
 
   // === Other synonyms ===
@@ -193,6 +239,12 @@ function isFinancialTypeKeyword(word: string): boolean {
 function toNumber(val: number | string): number {
   if (typeof val === 'number') return val
   return parseFloat(val) || 0
+}
+
+// Format a source reference for data traceability
+// Output: [Sheet_Name, Financial_Type, Data_Type, Item_Code, Month, Year]
+function formatSourceRef(row: FinancialRow): string {
+  return `[${row.Sheet_Name}, ${row.Financial_Type}, ${row.Data_Type}, ${row.Item_Code}, ${row.Month}, ${row.Year}]`
 }
 
 interface FinancialRow {
@@ -870,6 +922,356 @@ function getUniqueValues(data: FinancialRow[], project: string, field: keyof Fin
 }
 
 // ============================================
+// Trend Query Handler
+// ============================================
+
+// Mapping from user-facing sheet/type keywords to actual Sheet_Name values used in monthly data
+const TREND_SHEET_MAP: Record<string, string[]> = {
+  'projection': ['Projection', 'Projected Cost'],
+  'projected': ['Projection', 'Projected Cost'],
+  'accrual': ['Accrual'],
+  'accrued': ['Accrual'],
+  'cash flow': ['Cash Flow', 'Cashflow', 'Cash Flow Actual received & paid as at'],
+  'cashflow': ['Cash Flow', 'Cashflow'],
+  'cf': ['Cash Flow', 'Cashflow'],
+  'committed': ['Committed Cost', 'Committed Value / Cost as at'],
+  'committed cost': ['Committed Cost'],
+  'committed value': ['Committed Cost'],
+}
+
+// Detect if a query is a Trend query
+function isTrendQuery(question: string): boolean {
+  const lowerQ = question.toLowerCase().trim()
+  return lowerQ.startsWith('trend ')
+}
+
+// Parse a Trend query to extract sheet, metric/item, and month count
+function parseTrendQuery(question: string): {
+  sheetName: string | null
+  dataTypeFilter: string | null
+  itemCode: string | null
+  monthCount: number
+  rawMetric: string
+} {
+  const lowerQ = question.toLowerCase().trim()
+  // Remove "trend" prefix
+  const afterTrend = lowerQ.replace(/^trend\s+/, '').trim()
+  
+  // Expand acronyms in the remaining text
+  const expanded = expandAcronyms(afterTrend)
+  
+  let sheetName: string | null = null
+  let dataTypeFilter: string | null = null
+  let itemCode: string | null = null
+  let monthCount = 6 // default
+  let rawMetric = afterTrend
+
+  // Extract month count from end of query (e.g., "trend accrual preliminaries 3")
+  const monthsMatch = expanded.match(/\s+(\d+)\s*(months?)?$/i)
+  if (monthsMatch) {
+    monthCount = parseInt(monthsMatch[1])
+    if (monthCount < 1) monthCount = 1
+    if (monthCount > 24) monthCount = 24
+    rawMetric = afterTrend.replace(/\s+\d+\s*(months?)?$/i, '').trim()
+  }
+
+  // Re-expand after trimming month count
+  const expandedClean = expandAcronyms(rawMetric)
+
+  // Try to detect sheet/financial type from the query
+  const sortedSheetEntries = Object.entries(TREND_SHEET_MAP).sort((a, b) => b[0].length - a[0].length)
+  
+  for (const [keyword, sheetCandidates] of sortedSheetEntries) {
+    const pattern = new RegExp(`\\b${keyword.replace(/\s+/g, '\\s+')}\\b`, 'i')
+    if (pattern.test(expandedClean)) {
+      sheetName = sheetCandidates[0]
+      break
+    }
+  }
+
+  // Also check FINANCIAL_TYPE_KEYWORDS for sheet resolution
+  if (!sheetName) {
+    for (const [canonical, keywords] of Object.entries(FINANCIAL_TYPE_KEYWORDS)) {
+      for (const kw of keywords) {
+        const pattern = new RegExp(`\\b${kw.replace(/\s+/g, '\\s+')}\\b`, 'i')
+        if (pattern.test(expandedClean)) {
+          const mapped = TREND_SHEET_MAP[canonical] || TREND_SHEET_MAP[kw]
+          if (mapped) {
+            sheetName = mapped[0]
+          } else {
+            sheetName = canonical.charAt(0).toUpperCase() + canonical.slice(1)
+          }
+          break
+        }
+      }
+      if (sheetName) break
+    }
+  }
+
+  // Try to detect data type / item from query
+  const sortedParentItems = Object.entries(PARENT_ITEM_MAP).sort((a, b) => b[0].length - a[0].length)
+  for (const [keyword, info] of sortedParentItems) {
+    const pattern = new RegExp(`\\b${keyword.replace(/\s+/g, '\\s+')}\\b`, 'i')
+    if (pattern.test(expandedClean)) {
+      itemCode = info.code
+      dataTypeFilter = keyword
+      break
+    }
+  }
+
+  // Check for common metric keywords (gp, np, etc.)
+  if (!dataTypeFilter) {
+    const metricKeywords: Record<string, string> = {
+      'gross profit': 'gross profit',
+      'net profit': 'net profit',
+      'gp': 'gross profit',
+      'np': 'net profit',
+      'income': 'income',
+      'revenue': 'revenue',
+      'cost': 'cost',
+    }
+    for (const [keyword, filter] of Object.entries(metricKeywords)) {
+      if (expandedClean.includes(keyword)) {
+        dataTypeFilter = filter
+        break
+      }
+    }
+  }
+
+  return { sheetName, dataTypeFilter, itemCode, monthCount, rawMetric }
+}
+
+// Generate a list of (year, month) tuples going backwards from the report date
+function getMonthRange(reportYear: number, reportMonth: number, count: number): Array<{ year: number; month: number }> {
+  const result: Array<{ year: number; month: number }> = []
+  let y = reportYear
+  let m = reportMonth
+  for (let i = 0; i < count; i++) {
+    result.push({ year: y, month: m })
+    m--
+    if (m < 1) {
+      m = 12
+      y--
+    }
+  }
+  return result.reverse()
+}
+
+// Handle a Trend query
+function handleTrendQuery(data: FinancialRow[], project: string, question: string, defaultMonth: string): FuzzyResult | null {
+  if (!isTrendQuery(question)) return null
+
+  const parsed = parseTrendQuery(question)
+  const projectData = data.filter(d => d._project === project)
+
+  if (projectData.length === 0) {
+    return { text: 'No data found for this project.', candidates: [] }
+  }
+
+  // Determine the report date from the data
+  let reportYear = 0
+  let reportMonth = 0
+  
+  // Try to get report date from General/Project Info
+  const generalRows = projectData.filter(d => d.Financial_Type === 'General')
+  const reportDateRow = generalRows.find(d => d.Data_Type === 'Report Date')
+  if (reportDateRow) {
+    const reportDateStr = String(reportDateRow.Value)
+    const dateMatch = reportDateStr.match(/(\d{4})-(\d{1,2})/) || 
+                      reportDateStr.match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/)
+    if (dateMatch) {
+      if (dateMatch[3]) {
+        reportYear = parseInt(dateMatch[3])
+        reportMonth = parseInt(dateMatch[2])
+      } else {
+        reportYear = parseInt(dateMatch[1])
+        reportMonth = parseInt(dateMatch[2])
+      }
+    }
+  }
+  
+  // Fallback: use the maximum year/month from actual data rows
+  if (reportYear === 0) {
+    for (const row of projectData) {
+      if (row.Sheet_Name === 'Financial Status') continue
+      const y = parseInt(row.Year) || 0
+      const m = parseInt(row.Month) || 0
+      if (y > reportYear || (y === reportYear && m > reportMonth)) {
+        reportYear = y
+        reportMonth = m
+      }
+    }
+  }
+  
+  // Last fallback
+  if (reportYear === 0) {
+    reportYear = new Date().getFullYear()
+    reportMonth = parseInt(defaultMonth) || new Date().getMonth() + 1
+  }
+
+  // Resolve the sheet name
+  const availableSheets = Array.from(new Set(projectData.map(d => d.Sheet_Name)))
+  let resolvedSheet: string | null = null
+  
+  if (parsed.sheetName) {
+    resolvedSheet = availableSheets.find(s => s.toLowerCase() === parsed.sheetName!.toLowerCase()) || null
+    
+    if (!resolvedSheet) {
+      resolvedSheet = availableSheets.find(s => 
+        s.toLowerCase().includes(parsed.sheetName!.toLowerCase()) || 
+        parsed.sheetName!.toLowerCase().includes(s.toLowerCase())
+      ) || null
+    }
+    
+    if (!resolvedSheet) {
+      const expandedClean = expandAcronyms(parsed.rawMetric).toLowerCase()
+      for (const [keyword, candidates] of Object.entries(TREND_SHEET_MAP)) {
+        const pattern = new RegExp(`\\b${keyword.replace(/\s+/g, '\\s+')}\\b`, 'i')
+        if (pattern.test(expandedClean)) {
+          for (const candidate of candidates) {
+            resolvedSheet = availableSheets.find(s => 
+              s.toLowerCase() === candidate.toLowerCase() || 
+              s.toLowerCase().includes(candidate.toLowerCase())
+            ) || null
+            if (resolvedSheet) break
+          }
+          if (resolvedSheet) break
+        }
+      }
+    }
+  }
+  
+  if (!resolvedSheet) {
+    if (parsed.dataTypeFilter && ['gross profit', 'net profit'].includes(parsed.dataTypeFilter.toLowerCase())) {
+      resolvedSheet = availableSheets.find(s => 
+        s.toLowerCase().includes('projection') || s.toLowerCase().includes('projected')
+      ) || null
+    }
+    
+    if (!resolvedSheet) {
+      const monthlySheetNames = availableSheets.filter(s => s !== 'Financial Status')
+      if (monthlySheetNames.length > 0) {
+        resolvedSheet = monthlySheetNames[0]
+      }
+    }
+  }
+
+  if (!resolvedSheet) {
+    return {
+      text: `❌ Could not determine which sheet to use for trend data.\n\nAvailable sheets: ${availableSheets.join(', ')}\n\nTry: "Trend Projection GP 6" or "Trend Accrual Preliminaries 3"`,
+      candidates: []
+    }
+  }
+
+  // Get the month range
+  const monthRange = getMonthRange(reportYear, reportMonth, parsed.monthCount)
+
+  // Filter data for the resolved sheet
+  let sheetData = projectData.filter(d => d.Sheet_Name === resolvedSheet)
+
+  // Apply data type filter
+  if (parsed.dataTypeFilter) {
+    const filterLower = parsed.dataTypeFilter.toLowerCase()
+    
+    if (parsed.itemCode) {
+      sheetData = sheetData.filter(d => d.Item_Code === parsed.itemCode)
+    } else {
+      sheetData = sheetData.filter(d => d.Data_Type.toLowerCase().includes(filterLower))
+    }
+  }
+
+  if (sheetData.length === 0) {
+    const allDataTypes = Array.from(new Set(
+      projectData.filter(d => d.Sheet_Name === resolvedSheet).map(d => `${d.Item_Code}: ${d.Data_Type}`)
+    )).sort((a, b) => {
+      // Sort by item code numerically (e.g., 2.10 should come after 2.9)
+      const codeA = a.split(':')[0]
+      const codeB = b.split(':')[0]
+      const partsA = codeA.split('.').map(Number)
+      const partsB = codeB.split('.').map(Number)
+      for (let i = 0; i < Math.max(partsA.length, partsB.length); i++) {
+        const diff = (partsA[i] || 0) - (partsB[i] || 0)
+        if (diff !== 0) return diff
+      }
+      return 0
+    })
+
+    let msg = `❌ No matching data found in "${resolvedSheet}" sheet`
+    if (parsed.dataTypeFilter) msg += ` for "${parsed.dataTypeFilter}"`
+    msg += '.\n\n'
+    msg += `**Available items in ${resolvedSheet}:**\n`
+    msg += allDataTypes.slice(0, 20).map(dt => `• ${dt}`).join('\n')
+    if (allDataTypes.length > 20) msg += `\n• ... and ${allDataTypes.length - 20} more`
+    
+    return { text: msg, candidates: [] }
+  }
+
+  const matchedDataType = sheetData[0]?.Data_Type || parsed.dataTypeFilter || 'Unknown'
+  const matchedItemCode = parsed.itemCode || sheetData[0]?.Item_Code || ''
+
+  // Collect values for each month
+  const trendData: Array<{ year: number; month: number; value: number; hasData: boolean; rows: FinancialRow[] }> = []
+
+  for (const { year, month } of monthRange) {
+    const monthRows = sheetData.filter(d => 
+      parseInt(d.Year) === year && parseInt(d.Month) === month
+    )
+    
+    if (monthRows.length > 0) {
+      const total = monthRows.reduce((sum, d) => sum + toNumber(d.Value), 0)
+      trendData.push({ year, month, value: total, hasData: true, rows: monthRows })
+    } else {
+      trendData.push({ year, month, value: 0, hasData: false, rows: [] })
+    }
+  }
+
+  const hasAnyData = trendData.some(d => d.hasData)
+  if (!hasAnyData) {
+    return {
+      text: `❌ No trend data found for the requested ${parsed.monthCount} months.\n\nThe data may not contain monthly records for this date range.`,
+      candidates: []
+    }
+  }
+
+  const monthNames = ['', 'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+  const itemLabel = matchedItemCode ? ` (Item ${matchedItemCode})` : ''
+  
+  const dataPoints = trendData.filter(d => d.hasData)
+  const firstValue = dataPoints.length > 0 ? dataPoints[0].value : 0
+  const lastValue = dataPoints.length > 0 ? dataPoints[dataPoints.length - 1].value : 0
+  const trendDiff = lastValue - firstValue
+  const trendPct = firstValue !== 0 ? (trendDiff / Math.abs(firstValue)) * 100 : 0
+  const trendArrow = trendDiff > 0 ? '↑' : trendDiff < 0 ? '↓' : '→'
+  const trendSign = trendDiff > 0 ? '+' : ''
+
+  let response = `## Trend: ${matchedDataType}${itemLabel} (Last ${parsed.monthCount} Months)\n\n`
+  response += `**Sheet:** ${resolvedSheet}\n`
+  response += `**Period:** ${monthNames[monthRange[0].month]} ${monthRange[0].year} → ${monthNames[monthRange[monthRange.length-1].month]} ${monthRange[monthRange.length-1].year}\n\n`
+
+  response += `| Month | ${matchedDataType} ('000) |\n`
+  response += `|-------|${'-'.repeat(Math.max(matchedDataType.length + 8, 20))}|\n`
+
+  for (const point of trendData) {
+    const monthLabel = `${monthNames[point.month]} ${point.year}`
+    if (point.hasData) {
+      const sourceRef = point.rows.length === 1 
+        ? ` ${formatSourceRef(point.rows[0])}` 
+        : point.rows.length > 1 
+          ? ` [${point.rows[0].Sheet_Name}, ${point.rows[0].Financial_Type}, ${point.rows[0].Data_Type}, ${point.rows[0].Item_Code}, ${point.month}, ${point.year}]`
+          : ''
+      response += `| ${monthLabel} | ${formatCurrency(point.value)}${sourceRef} |\n`
+    } else {
+      response += `| ${monthLabel} | — |\n`
+    }
+  }
+
+  response += `\n**Trend:** ${trendArrow} ${formatCurrency(Math.abs(trendDiff))} (${trendSign}${trendPct.toFixed(1)}%)\n`
+  response += `\n*Values in thousands ('000)*`
+
+  return { text: response, candidates: [] }
+}
+
+// ============================================
 // Comparison Query Handler
 // ============================================
 
@@ -1105,11 +1507,19 @@ function handleComparisonQuery(data: FinancialRow[], project: string, question: 
   response += `**Table:** ${targetSheet}\n`
   response += `**Metric:** ${metricLabel}\n\n`
 
+  // Build source refs for each side
+  const sourceRef1 = result1.rows.length > 0 
+    ? ` ${formatSourceRef(result1.rows[0])}` 
+    : ''
+  const sourceRef2 = result2.rows.length > 0 
+    ? ` ${formatSourceRef(result2.rows[0])}` 
+    : ''
+
   // Table header
   response += `| Financial Type | ${metricLabel} |\n`
   response += `|----------------|${'-'.repeat(Math.max(metricLabel.length, 14))}|\n`
-  response += `| ${finType1} | ${formatCurrency(result1.total)} |\n`
-  response += `| ${finType2} | ${formatCurrency(result2.total)} |\n`
+  response += `| ${finType1} | ${formatCurrency(result1.total)}${sourceRef1} |\n`
+  response += `| ${finType2} | ${formatCurrency(result2.total)}${sourceRef2} |\n`
   response += `| Difference | ${arrow} ${formatCurrency(absDiff)} (${sign}${pctChange.toFixed(1)}%) |\n`
 
   response += `\n*Values in ('000)*`
@@ -1138,6 +1548,15 @@ function handleComparisonQuery(data: FinancialRow[], project: string, question: 
 
 // Parent item name → item code mapping
 const PARENT_ITEM_MAP: Record<string, { code: string; name: string }> = {
+  // Summary-level items (GP, NP) — important for disambiguation
+  // Item 3 = "Gross Profit (Item 1.0-2.0)" vs Item 5 = "Gross Profit (Item 3.0-4.3)"
+  // When user says "GP" they mean Item 3 (the primary Gross Profit)
+  'gross profit': { code: '3', name: 'Gross Profit (Item 1.0-2.0) (Financial A/C)' },
+  'net profit': { code: '7', name: 'Acc. Net Profit/(Loss)' },
+  'income': { code: '1', name: 'Income' },
+  'revenue': { code: '1', name: 'Income' },
+  'overhead': { code: '6', name: 'Overhead' },
+  // Cost sub-categories
   'preliminaries': { code: '2.1', name: 'Preliminaries' },
   'prelim': { code: '2.1', name: 'Preliminaries' },
   'preliminary': { code: '2.1', name: 'Preliminaries' },
@@ -1438,10 +1857,11 @@ function handleTotalQuery(data: FinancialRow[], project: string, question: strin
 
   for (const [itemCode, group] of sortedSubItems) {
     const description = group.dataType || '-'
-    response += `| ${itemCode} | ${description} | ${formatCurrency(group.total)} |\n`
+    const sourceRef = group.rows.length > 0 ? ` ${formatSourceRef(group.rows[0])}` : ''
+    response += `| ${itemCode} | ${description} | ${formatCurrency(group.total)}${sourceRef} |\n`
   }
 
-  response += `\n**Total: ${formatCurrency(grandTotal)}** ('000)\n`
+  response += `\n**Total: ${formatCurrency(grandTotal)}** [sum of ${sortedSubItems.length} items] ('000)\n`
 
   // Build candidates for drill-down
   const candidates = sortedSubItems.map(([itemCode, group], i) => ({
@@ -1475,6 +1895,8 @@ interface AnalysisItem {
   label2: string          // e.g., "Business Plan"
   difference: number
   percentage: number
+  sourceRef1: string      // source reference for value1
+  sourceRef2: string      // source reference for value2
 }
 
 interface AnalysisComparison {
@@ -1671,6 +2093,16 @@ function getFinancialStatusValue(data: FinancialRow[], project: string, itemCode
   return rows.reduce((sum, d) => sum + toNumber(d.Value), 0)
 }
 
+// Get rows for a specific item code and financial type from Financial Status sheet
+function getFinancialStatusRows(data: FinancialRow[], project: string, itemCode: string, financialType: string): FinancialRow[] {
+  return data.filter(d => 
+    d._project === project && 
+    d.Sheet_Name === 'Financial Status' && 
+    d.Item_Code === itemCode && 
+    d.Financial_Type === financialType
+  )
+}
+
 // Run a comparison between two financial types for a set of items
 function runComparison(
   data: FinancialRow[], 
@@ -1686,8 +2118,10 @@ function runComparison(
   let subIndex = 0
   
   for (const item of items) {
-    const val1 = getFinancialStatusValue(data, project, item.itemCode, finType1)
-    const val2 = getFinancialStatusValue(data, project, item.itemCode, finType2)
+    const rows1 = getFinancialStatusRows(data, project, item.itemCode, finType1)
+    const rows2 = getFinancialStatusRows(data, project, item.itemCode, finType2)
+    const val1 = rows1.reduce((sum, d) => sum + toNumber(d.Value), 0)
+    const val2 = rows2.reduce((sum, d) => sum + toNumber(d.Value), 0)
     
     // Skip if both are zero or either is missing
     if (val1 === 0 && val2 === 0) continue
@@ -1699,6 +2133,9 @@ function runComparison(
       const diff = Math.abs(val1 - val2)
       const pct = val2 !== 0 ? (diff / Math.abs(val2)) * 100 : 0
       
+      const sourceRef1 = rows1.length > 0 ? formatSourceRef(rows1[0]) : ''
+      const sourceRef2 = rows2.length > 0 ? formatSourceRef(rows2[0]) : ''
+      
       results.push({
         subIndex,
         itemCode: item.itemCode,
@@ -1708,7 +2145,9 @@ function runComparison(
         label1,
         label2,
         difference: diff,
-        percentage: pct
+        percentage: pct,
+        sourceRef1,
+        sourceRef2
       })
     }
   }
@@ -1884,7 +2323,9 @@ function handleAnalyzeQuery(data: FinancialRow[], project: string): FuzzyResult 
         for (const item of comp.items) {
           const arrow = comp.operator === 'lt' ? '↓' : '↑'
           const sign = comp.operator === 'lt' ? '-' : '+'
-          response += `   ${comp.comparisonIndex}.${item.subIndex} ${item.itemName}: ${item.label1} ${formatCurrency(item.value1)} < ${item.label2} ${formatCurrency(item.value2)} (${arrow}${formatCurrency(item.difference)}, ${sign}${item.percentage.toFixed(1)}%)\n`
+          const ref1 = item.sourceRef1 ? ` ${item.sourceRef1}` : ''
+          const ref2 = item.sourceRef2 ? ` ${item.sourceRef2}` : ''
+          response += `   ${comp.comparisonIndex}.${item.subIndex} ${item.itemName}: ${item.label1} ${formatCurrency(item.value1)}${ref1} < ${item.label2} ${formatCurrency(item.value2)}${ref2} (${arrow}${formatCurrency(item.difference)}, ${sign}${item.percentage.toFixed(1)}%)\n`
         }
       }
       response += `\n`
@@ -1903,7 +2344,9 @@ function handleAnalyzeQuery(data: FinancialRow[], project: string): FuzzyResult 
         for (const item of comp.items) {
           const arrow = '↑'
           const sign = '+'
-          response += `   ${comp.comparisonIndex}.${item.subIndex} ${item.itemName}: ${item.label1} ${formatCurrency(item.value1)} > ${item.label2} ${formatCurrency(item.value2)} (${arrow}${formatCurrency(item.difference)}, ${sign}${item.percentage.toFixed(1)}%)\n`
+          const ref1 = item.sourceRef1 ? ` ${item.sourceRef1}` : ''
+          const ref2 = item.sourceRef2 ? ` ${item.sourceRef2}` : ''
+          response += `   ${comp.comparisonIndex}.${item.subIndex} ${item.itemName}: ${item.label1} ${formatCurrency(item.value1)}${ref1} > ${item.label2} ${formatCurrency(item.value2)}${ref2} (${arrow}${formatCurrency(item.difference)}, ${sign}${item.percentage.toFixed(1)}%)\n`
         }
       }
       response += `\n`
@@ -1969,8 +2412,10 @@ function handleDetailQuery(data: FinancialRow[], project: string, question: stri
     let foundItems = 0
     
     for (const tier3 of thirdTierItems) {
-      const val1 = getFinancialStatusValue(data, project, tier3.itemCode, comparison.finType1)
-      const val2 = getFinancialStatusValue(data, project, tier3.itemCode, comparison.finType2)
+      const rows1 = getFinancialStatusRows(data, project, tier3.itemCode, comparison.finType1)
+      const rows2 = getFinancialStatusRows(data, project, tier3.itemCode, comparison.finType2)
+      const val1 = rows1.reduce((sum, d) => sum + toNumber(d.Value), 0)
+      const val2 = rows2.reduce((sum, d) => sum + toNumber(d.Value), 0)
       
       if (val1 === 0 && val2 === 0) continue
       
@@ -1984,7 +2429,9 @@ function handleDetailQuery(data: FinancialRow[], project: string, question: stri
       const sign = comparison.operator === 'lt' ? '-' : '+'
       totalDiff += diff
       
-      response += `| ${tier3.itemCode} ${tier3.itemName} | ${formatCurrency(val1)} | ${formatCurrency(val2)} | ${arrow}${formatCurrency(diff)} (${sign}${pct.toFixed(1)}%) |\n`
+      const ref1 = rows1.length > 0 ? ` ${formatSourceRef(rows1[0])}` : ''
+      const ref2 = rows2.length > 0 ? ` ${formatSourceRef(rows2[0])}` : ''
+      response += `| ${tier3.itemCode} ${tier3.itemName} | ${formatCurrency(val1)}${ref1} | ${formatCurrency(val2)}${ref2} | ${arrow}${formatCurrency(diff)} (${sign}${pct.toFixed(1)}%) |\n`
     }
     
     if (foundItems === 0) {
@@ -2013,8 +2460,10 @@ function handleDetailQuery(data: FinancialRow[], project: string, question: stri
       
       let foundThirdTier = false
       for (const tier3 of thirdTierItems) {
-        const val1 = getFinancialStatusValue(data, project, tier3.itemCode, comparison.finType1)
-        const val2 = getFinancialStatusValue(data, project, tier3.itemCode, comparison.finType2)
+        const rows1 = getFinancialStatusRows(data, project, tier3.itemCode, comparison.finType1)
+        const rows2 = getFinancialStatusRows(data, project, tier3.itemCode, comparison.finType2)
+        const val1 = rows1.reduce((sum, d) => sum + toNumber(d.Value), 0)
+        const val2 = rows2.reduce((sum, d) => sum + toNumber(d.Value), 0)
         
         if (val1 === 0 && val2 === 0) continue
         
@@ -2028,7 +2477,9 @@ function handleDetailQuery(data: FinancialRow[], project: string, question: stri
         const sign = comparison.operator === 'lt' ? '-' : '+'
         const symbol = comparison.operator === 'lt' ? '<' : '>'
         
-        response += `   - ${tier3.itemCode} ${tier3.itemName}: ${analysisItem.label1} ${formatCurrency(val1)} ${symbol} ${analysisItem.label2} ${formatCurrency(val2)} (${arrow}${formatCurrency(diff)}, ${sign}${pct.toFixed(1)}%)\n`
+        const ref1 = rows1.length > 0 ? ` ${formatSourceRef(rows1[0])}` : ''
+        const ref2 = rows2.length > 0 ? ` ${formatSourceRef(rows2[0])}` : ''
+        response += `   - ${tier3.itemCode} ${tier3.itemName}: ${analysisItem.label1} ${formatCurrency(val1)}${ref1} ${symbol} ${analysisItem.label2} ${formatCurrency(val2)}${ref2} (${arrow}${formatCurrency(diff)}, ${sign}${pct.toFixed(1)}%)\n`
       }
       
       if (!foundThirdTier) {
@@ -2069,6 +2520,10 @@ function answerQuestion(data: FinancialRow[], project: string, question: string,
   // Step 0a: Check if this is a Total query — handle with dedicated logic
   const totalResult = handleTotalQuery(data, project, question, defaultMonth)
   if (totalResult) return totalResult
+
+  // Step 0ab: Check if this is a Trend query — handle with dedicated logic
+  const trendResult = handleTrendQuery(data, project, question, defaultMonth)
+  if (trendResult) return trendResult
 
   // Step 0b: Check if this is a comparison query — handle it with dedicated logic
   const comparisonResult = handleComparisonQuery(data, project, question, defaultMonth)
@@ -2224,6 +2679,9 @@ function answerQuestion(data: FinancialRow[], project: string, question: string,
   // If no acronym match found, continue with regular matching
   let bestDataTypeMatchCount = 0
 
+  // Helper to check if a word looks like an item code (e.g., "2.1", "1.2.3")
+  const isItemCodePattern = (word: string) => /^\d+(\.\d+)+$/.test(word)
+
   if (!targetDataType) {
     for (const dt of dataTypes) {
       const dtLower = dt.toLowerCase()
@@ -2233,6 +2691,12 @@ function answerQuestion(data: FinancialRow[], project: string, question: string,
       let matchCount = 0
       const matchedWords: string[] = []
       for (const qWord of questionWords) {
+        // Skip words that look like item codes (e.g., "2.1", "1.2.3")
+        if (isItemCodePattern(qWord)) continue
+        // Skip words that are Financial_Type keywords (e.g., "projected", "budget")
+        // This prevents "projected" from matching "Project Code" in Data_Type
+        if (isFinancialTypeKeyword(qWord)) continue
+        
         for (const dtWord of dtWords) {
           if (qWord === dtWord) {
             matchCount++
@@ -2246,6 +2710,10 @@ function answerQuestion(data: FinancialRow[], project: string, question: string,
       for (const qWord of questionWords) {
         if (matchedWords.includes(qWord)) continue
         if (qWord.length <= 3) continue
+        // Skip words that look like item codes
+        if (isItemCodePattern(qWord)) continue
+        // Skip words that are Financial_Type keywords
+        if (isFinancialTypeKeyword(qWord)) continue
 
         for (const dtWord of dtWords) {
           const qLen = qWord.length
@@ -2272,10 +2740,41 @@ function answerQuestion(data: FinancialRow[], project: string, question: string,
   // If no match found, use fuzzy matching with all significant words
   if (!targetDataType) {
     for (const word of questionWords) {
+      // Skip words that look like item codes (e.g., "2.1", "1.2.3")
+      if (isItemCodePattern(word)) continue
+      // Skip words that are Financial_Type keywords
+      if (isFinancialTypeKeyword(word)) continue
+      
       const match = findClosestMatch(word, dataTypes)
       if (match) {
         targetDataType = match
         break
+      }
+    }
+  }
+
+  // Step 6: Extract Item_Code from question
+  // Patterns: "item code 2.1", "item_code 2.1", "item 2.1", standalone "2.1"
+  let targetItemCode: string | null = null
+  
+  // Pattern 1: "item code X.X" or "item_code X.X" or "item X.X"
+  const itemCodePattern = /item[_\s]*code[_\s]*(\d+(?:\.\d+)*)/i
+  const itemCodeMatch = expandedQuestion.match(itemCodePattern)
+  if (itemCodeMatch) {
+    targetItemCode = itemCodeMatch[1]
+  } else {
+    // Pattern 2: "item X.X" (without "code")
+    const itemPattern = /item[_\s]+(\d+(?:\.\d+)*)/i
+    const itemMatch = expandedQuestion.match(itemPattern)
+    if (itemMatch) {
+      targetItemCode = itemMatch[1]
+    } else {
+      // Pattern 3: Standalone number pattern like "2.1" or "1.2.3" (but not dates like "2025")
+      // Only match if it's clearly an item code (has a decimal point and is short)
+      const standalonePattern = /(?:^|\s)(\d+\.\d+(?:\.\d+)?)(?:\s|$)/
+      const standaloneMatch = expandedQuestion.match(standalonePattern)
+      if (standaloneMatch && standaloneMatch[1].length <= 10) {
+        targetItemCode = standaloneMatch[1]
       }
     }
   }
@@ -2312,6 +2811,11 @@ function answerQuestion(data: FinancialRow[], project: string, question: string,
     filtered = filtered.filter(d => d.Data_Type === targetDataType)
   }
 
+  // Apply Item_Code filter (if found)
+  if (targetItemCode) {
+    filtered = filtered.filter(d => d.Item_Code === targetItemCode)
+  }
+
   // If no exact matches, relax filters progressively
   if (filtered.length === 0) {
     // Try without Financial_Type
@@ -2320,6 +2824,7 @@ function answerQuestion(data: FinancialRow[], project: string, question: string,
     if (parsedDate.month) filtered = filtered.filter(d => d.Month === parsedDate.month)
     if (parsedDate.year) filtered = filtered.filter(d => d.Year === parsedDate.year)
     if (targetDataType) filtered = filtered.filter(d => d.Data_Type === targetDataType)
+    if (targetItemCode) filtered = filtered.filter(d => d.Item_Code === targetItemCode)
     appliedSheet = targetSheet || 'Financial Status'
   }
 
@@ -2329,6 +2834,7 @@ function answerQuestion(data: FinancialRow[], project: string, question: string,
     if (targetSheet) filtered = filtered.filter(d => d.Sheet_Name === targetSheet)
     if (parsedDate.month) filtered = filtered.filter(d => d.Month === parsedDate.month)
     if (parsedDate.year) filtered = filtered.filter(d => d.Year === parsedDate.year)
+    if (targetItemCode) filtered = filtered.filter(d => d.Item_Code === targetItemCode)
     appliedSheet = targetSheet || 'Financial Status'
   }
 
@@ -2387,15 +2893,29 @@ function answerQuestion(data: FinancialRow[], project: string, question: string,
   // Show year - only show actual year if user specified it
   response += `• Year: ${hasUserDate && parsedDate.year ? parsedDate.year : 'All'}\n`
   response += `• Data Type: ${targetDataType || 'All'}\n`
-  response += `• Item Code: all\n\n`
+  response += `• Item Code: ${targetItemCode || 'All'}\n\n`
 
-  response += `**Total: ${formatCurrency(total)}** ('000)\n\n`
+  // Build source ref for the total
+  const totalSourceRef = filtered.length === 1 
+    ? ` ${formatSourceRef(filtered[0])}` 
+    : filtered.length > 1 
+      ? ` [sum of ${filtered.length} rows]`
+      : ''
+  response += `**Total: ${formatCurrency(total)}${totalSourceRef}** ('000)\n\n`
 
-  response += `**By Item Code:**\n`
-  itemGroups.forEach((rows, itemCode) => {
-    const itemTotal = rows.reduce((sum, d) => sum + toNumber(d.Value), 0)
-    response += `• Item ${itemCode}: ${formatCurrency(itemTotal)}\n`
+  // Only show "By Item Code" breakdown if no specific item code was filtered
+  if (!targetItemCode) {
+    response += `**By Item Code:**\n`
+    itemGroups.forEach((rows, itemCode) => {
+      const itemTotal = rows.reduce((sum, d) => sum + toNumber(d.Value), 0)
+    const itemSourceRef = rows.length === 1 
+      ? ` ${formatSourceRef(rows[0])}` 
+      : rows.length > 1 
+        ? ` ${formatSourceRef(rows[0])}`
+        : ''
+    response += `• Item ${itemCode}: ${formatCurrency(itemTotal)}${itemSourceRef}\n`
   })
+  } // End of if (!targetItemCode)
 
   // Create candidates for clickable selection
   // ALWAYS score ALL project data records and show top 10 best matches
@@ -2432,9 +2952,12 @@ function answerQuestion(data: FinancialRow[], project: string, question: string,
         if (!matchedKeywords.includes(qWord)) matchedKeywords.push(qWord)
       }
 
-      // Item_Code match
-      if (d.Item_Code.toLowerCase().includes(qWord)) {
-        matchScore += 3
+      // Item_Code match - EXACT match gets much higher score than substring
+      if (d.Item_Code.toLowerCase() === qWord) {
+        matchScore += 50  // EXACT match - high priority (e.g., "2.1" matches "2.1")
+        if (!matchedKeywords.includes(qWord)) matchedKeywords.push(qWord)
+      } else if (d.Item_Code.toLowerCase().includes(qWord)) {
+        matchScore += 3   // Substring match - low priority (e.g., "2.1" matches "2.1.1")
         if (!matchedKeywords.includes(qWord)) matchedKeywords.push(qWord)
       }
 

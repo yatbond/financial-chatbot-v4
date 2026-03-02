@@ -5,6 +5,9 @@ import './globals.css'
 
 const inter = Inter({ subsets: ['latin'] })
 
+// Force dynamic rendering to avoid Clerk prerender errors during build
+export const dynamic = 'force-dynamic'
+
 export const metadata: Metadata = {
   title: 'Financial Chatbot',
   description: 'AI-powered financial data analysis for construction projects',
