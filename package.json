@@ -1,5 +1,5 @@
 {
-  "name": "financial-chatbot-v2",
+  "name": "financial-chatbot-v3",
   "version": "1.0.0",
   "description": "Vercel-compatible financial chatbot with Next.js frontend and Python API",
   "scripts": {
