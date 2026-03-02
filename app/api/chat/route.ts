@@ -1879,7 +1879,7 @@ function handleComparisonQuery(data: FinancialRow[], project: string, question: 
     // Compare same Financial_Type across different dates
     const finType = finType1!
     
-    const getValueForDate = (date: { month: string | null; year: string | null }): { total: number; rows: FinancialRow[] } => {
+    const getValueForDate = (date: { month?: string | null; year?: string | null }): { total: number; rows: FinancialRow[] } => {
       let filtered = projectData.filter(d => d.Sheet_Name === targetSheet)
       filtered = filtered.filter(d => d.Financial_Type === finType)
       if (targetDataType) {
