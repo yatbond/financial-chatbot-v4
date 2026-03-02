@@ -94,7 +94,8 @@ import { google } from 'googleapis'
  *   supervision, staff → Manpower (Mgt. & Supervision) (Item 2.1.1)
  *   rebar             → Reinforcement (Item 2.6)
  *   labour, labor     → Manpower (Labour)
- *   profit, income    → Gross Profit
+ *   income, revenue   → Income (Item 1)
+ *   profit            → Gross Profit (Item 3)
  *   loss              → Net Loss
  *
  * QUERY PRIORITY ORDER:
@@ -182,8 +183,6 @@ const ACRONYM_MAP: Record<string, string> = {
 
   // === Other synonyms ===
   'profit': 'gross profit',
-  'income': 'gross profit',
-  'revenue': 'gross profit',
   'loss': 'net loss',
   'actual': 'actual cost',
   'accrued': 'accrual',
