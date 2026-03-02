@@ -91,8 +91,8 @@ import { google } from 'googleapis'
  *   contract works, subbie/subcon contract works → Contract works (Item 2.4.1)
  *   vo, variation, subbie/subcon vo/variation → Variation (Item 2.4.2)
  *   claim, claims, subbie/subcon claim → Claim (Item 2.4.3)
+ *   supervision, staff → Manpower (Mgt. & Supervision) (Item 2.1.1)
  *   rebar             → Reinforcement (Item 2.6)
- *   staff             → Manpower (Mgt. & Supervision)
  *   labour, labor     → Manpower (Labour)
  *   profit, income    → Gross Profit
  *   loss              → Net Loss
@@ -175,7 +175,7 @@ const ACRONYM_MAP: Record<string, string> = {
 
   // === Other shortcuts ===
   'rebar': 'reinforcement',
-  'staff': 'manpower (mgt. & supervision)',
+  'staff': 'supervision',
   'labour': 'manpower (labour)',
   'labor': 'manpower (labour)',
   'lab': 'labour',
@@ -1656,7 +1656,7 @@ const PARENT_ITEM_MAP: Record<string, { code: string; name: string }> = {
   'labour': { code: '2.5', name: 'Labour' },
   'labor': { code: '2.5', name: 'Labour' },
   'manpower': { code: '2.5', name: 'Manpower (Labour) for Works' },
-  'staff': { code: '2.6', name: 'Staff' },
+  'staff': { code: '2.1.1', name: 'Manpower (Mgt. & Supervision)' },
   'admin': { code: '2.7', name: 'Administration' },
   'administration': { code: '2.7', name: 'Administration' },
   'insurance': { code: '2.8', name: 'Insurance' },
