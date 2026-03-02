@@ -1180,6 +1180,36 @@ function handleTrendQuery(data: FinancialRow[], project: string, question: strin
     }
   }
 
+  // IMPORTANT: Never sum multiple rows - always find the BEST single match
+  // If multiple rows match, pick the one with the shortest Item_Code (most general/parent level)
+  if (sheetData.length > 0) {
+    // Get unique Item_Codes from matching rows
+    const uniqueItemCodes = Array.from(new Set(sheetData.map(d => d.Item_Code)))
+    
+    if (uniqueItemCodes.length > 1) {
+      // Sort by Item_Code length (shortest first = parent level)
+      // Then by numeric value
+      uniqueItemCodes.sort((a, b) => {
+        const aParts = a.split('.').map(Number)
+        const bParts = b.split('.').map(Number)
+        // First sort by number of parts (fewer = more general)
+        if (aParts.length !== bParts.length) {
+          return aParts.length - bParts.length
+        }
+        // Then by numeric value
+        for (let i = 0; i < Math.max(aParts.length, bParts.length); i++) {
+          const diff = (aParts[i] || 0) - (bParts[i] || 0)
+          if (diff !== 0) return diff
+        }
+        return 0
+      })
+      
+      // Pick the first (shortest/most general) Item_Code
+      const bestItemCode = uniqueItemCodes[0]
+      sheetData = sheetData.filter(d => d.Item_Code === bestItemCode)
+    }
+  }
+
   if (sheetData.length === 0) {
     const allDataTypes = Array.from(new Set(
       projectData.filter(d => d.Sheet_Name === resolvedSheet).map(d => `${d.Item_Code}: ${d.Data_Type}`)
@@ -1210,6 +1240,7 @@ function handleTrendQuery(data: FinancialRow[], project: string, question: strin
   const matchedItemCode = parsed.itemCode || sheetData[0]?.Item_Code || ''
 
   // Collect values for each month
+  // IMPORTANT: Never sum - always take the single row's value
   const trendData: Array<{ year: number; month: number; value: number; hasData: boolean; rows: FinancialRow[] }> = []
 
   for (const { year, month } of monthRange) {
@@ -1218,8 +1249,9 @@ function handleTrendQuery(data: FinancialRow[], project: string, question: strin
     )
     
     if (monthRows.length > 0) {
-      const total = monthRows.reduce((sum, d) => sum + toNumber(d.Value), 0)
-      trendData.push({ year, month, value: total, hasData: true, rows: monthRows })
+      // Never sum - always take the first (and only) row's value
+      const value = toNumber(monthRows[0].Value)
+      trendData.push({ year, month, value, hasData: true, rows: [monthRows[0]] })
     } else {
       trendData.push({ year, month, value: 0, hasData: false, rows: [] })
     }
