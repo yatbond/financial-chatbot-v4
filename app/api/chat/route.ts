@@ -1854,8 +1854,34 @@ function handleComparisonQuery(data: FinancialRow[], project: string, question: 
   // Extract the metric (Data_Type) to compare
   const targetDataType = extractComparisonMetric(expandedQuestion, dataTypes)
 
-  // Default to Financial Status sheet for comparison
-  const targetSheet = 'Financial Status'
+  // Detect target sheet from query (e.g., "cashflow" → "Cash Flow")
+  const availableSheets = getUniqueValues(data, project, 'Sheet_Name')
+  let targetSheet = 'Financial Status'  // default
+  
+  // Check for sheet keywords in the query
+  const lowerQ = expandedQuestion.toLowerCase()
+  if (lowerQ.includes('cash flow') || lowerQ.includes('cashflow') || lowerQ.includes('cf ')) {
+    // Find matching Cash Flow sheet
+    const cfSheet = availableSheets.find(s => 
+      s.toLowerCase().includes('cash flow') || s.toLowerCase() === 'cashflow'
+    )
+    if (cfSheet) targetSheet = cfSheet
+  } else if (lowerQ.includes('projection') || lowerQ.includes('projected')) {
+    const projSheet = availableSheets.find(s => 
+      s.toLowerCase().includes('projection')
+    )
+    if (projSheet) targetSheet = projSheet
+  } else if (lowerQ.includes('accrual') || lowerQ.includes('accrued')) {
+    const accrualSheet = availableSheets.find(s => 
+      s.toLowerCase().includes('accrual')
+    )
+    if (accrualSheet) targetSheet = accrualSheet
+  } else if (lowerQ.includes('committed')) {
+    const committedSheet = availableSheets.find(s => 
+      s.toLowerCase().includes('committed')
+    )
+    if (committedSheet) targetSheet = committedSheet
+  }
 
   // Parse dates from both sides
   const date1 = parseDate(compParts.side1, defaultMonth)
