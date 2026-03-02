@@ -1953,31 +1953,57 @@ function handleComparisonQuery(data: FinancialRow[], project: string, question: 
   let label2 = ''
 
   if (compareByDate) {
-    // Compare same Financial_Type across different dates
-    const finType = finType1!
+    // Compare same metric across different dates
+    // IMPORTANT: For "cash flow" type queries, data may be in different sheets:
+    // - Cash Flow sheet (monthly data) for historical months
+    // - Financial Status sheet (Cash Flow Actual received & paid as at) for current month
     
-    const getValueForDate = (date: { month?: string | null; year?: string | null }): { total: number; rows: FinancialRow[] } => {
-      let filtered = projectData.filter(d => d.Sheet_Name === targetSheet)
-      filtered = filtered.filter(d => d.Financial_Type === finType)
-      if (targetDataType) {
-        filtered = filtered.filter(d => d.Data_Type.toLowerCase().includes(targetDataType.toLowerCase()))
+    // Helper to find data for a specific date and metric
+    const findValueForDate = (date: { month?: string | null; year?: string | null }): { total: number; rows: FinancialRow[]; label: string } => {
+      // Try multiple sources in order of preference
+      const sources = [
+        { sheet: 'Cash Flow', finType: 'Cash Flow' },
+        { sheet: 'Financial Status', finType: 'Cash Flow Actual received & paid as at' },
+        { sheet: 'Financial Status', finType: finType1! },
+        { sheet: targetSheet, finType: finType1! },
+      ]
+      
+      for (const source of sources) {
+        let filtered = projectData.filter(d => 
+          d.Sheet_Name === source.sheet && 
+          d.Financial_Type === source.finType
+        )
+        
+        if (targetDataType) {
+          filtered = filtered.filter(d => d.Data_Type.toLowerCase().includes(targetDataType.toLowerCase()))
+        }
+        
+        if (date.month) {
+          filtered = filtered.filter(d => d.Month === date.month)
+        }
+        if (date.year) {
+          filtered = filtered.filter(d => d.Year === date.year)
+        }
+        
+        if (filtered.length > 0) {
+          const total = filtered.reduce((sum, d) => sum + toNumber(d.Value), 0)
+          return { 
+            total, 
+            rows: filtered, 
+            label: `${source.finType} (${date.month}/${date.year})` 
+          }
+        }
       }
-      if (date.month) {
-        filtered = filtered.filter(d => d.Month === date.month)
-      }
-      if (date.year) {
-        filtered = filtered.filter(d => d.Year === date.year)
-      }
-      const total = filtered.reduce((sum, d) => sum + toNumber(d.Value), 0)
-      return { total, rows: filtered }
+      
+      return { total: 0, rows: [], label: `${finType1} (${date.month}/${date.year})` }
     }
 
-    result1 = getValueForDate(date1)
-    result2 = getValueForDate(date2)
-    
-    const monthNames = ['', 'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
-    label1 = `${finType} (${monthNames[parseInt(date1.month || '1')] || ''} ${date1.year || ''})`
-    label2 = `${finType} (${monthNames[parseInt(date2.month || '1')] || ''} ${date2.year || ''})`
+    const r1 = findValueForDate(date1)
+    const r2 = findValueForDate(date2)
+    result1 = { total: r1.total, rows: r1.rows }
+    result2 = { total: r2.total, rows: r2.rows }
+    label1 = r1.label
+    label2 = r2.label
   } else {
     // Compare different Financial_Types (existing logic)
     const getValueForType = (finType: string, date?: { month?: string | null; year?: string | null }): { total: number; rows: FinancialRow[] } => {
