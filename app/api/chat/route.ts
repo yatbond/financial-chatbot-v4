@@ -2633,6 +2633,9 @@ function answerQuestion(data: FinancialRow[], project: string, question: string,
   // If no acronym match found, continue with regular matching
   let bestDataTypeMatchCount = 0
 
+  // Helper to check if a word looks like an item code (e.g., "2.1", "1.2.3")
+  const isItemCodePattern = (word: string) => /^\d+(\.\d+)+$/.test(word)
+
   if (!targetDataType) {
     for (const dt of dataTypes) {
       const dtLower = dt.toLowerCase()
@@ -2642,6 +2645,9 @@ function answerQuestion(data: FinancialRow[], project: string, question: string,
       let matchCount = 0
       const matchedWords: string[] = []
       for (const qWord of questionWords) {
+        // Skip words that look like item codes (e.g., "2.1", "1.2.3")
+        if (isItemCodePattern(qWord)) continue
+        
         for (const dtWord of dtWords) {
           if (qWord === dtWord) {
             matchCount++
@@ -2655,6 +2661,8 @@ function answerQuestion(data: FinancialRow[], project: string, question: string,
       for (const qWord of questionWords) {
         if (matchedWords.includes(qWord)) continue
         if (qWord.length <= 3) continue
+        // Skip words that look like item codes
+        if (isItemCodePattern(qWord)) continue
 
         for (const dtWord of dtWords) {
           const qLen = qWord.length
@@ -2681,6 +2689,9 @@ function answerQuestion(data: FinancialRow[], project: string, question: string,
   // If no match found, use fuzzy matching with all significant words
   if (!targetDataType) {
     for (const word of questionWords) {
+      // Skip words that look like item codes (e.g., "2.1", "1.2.3")
+      if (isItemCodePattern(word)) continue
+      
       const match = findClosestMatch(word, dataTypes)
       if (match) {
         targetDataType = match
