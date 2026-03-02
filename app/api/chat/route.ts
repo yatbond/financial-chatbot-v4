@@ -1556,20 +1556,69 @@ const PARENT_ITEM_MAP: Record<string, { code: string; name: string }> = {
   'income': { code: '1', name: 'Income' },
   'revenue': { code: '1', name: 'Income' },
   'overhead': { code: '6', name: 'Overhead' },
-  // Cost sub-categories
+  
+  // Item 2 - Less : Cost
+  'cost': { code: '2', name: 'Less : Cost' },
+  'total cost': { code: '2', name: 'Less : Cost' },
+  'less cost': { code: '2', name: 'Less : Cost' },
+  
+  // Item 2.1 - Preliminaries
   'preliminaries': { code: '2.1', name: 'Preliminaries' },
   'prelim': { code: '2.1', name: 'Preliminaries' },
   'preliminary': { code: '2.1', name: 'Preliminaries' },
+  'total prelim': { code: '2.1', name: 'Preliminaries' },
+  
+  // Item 2.2 - Materials
   'materials': { code: '2.2', name: 'Materials' },
   'material': { code: '2.2', name: 'Materials' },
+  'material cost': { code: '2.2', name: 'Materials' },
+  
+  // Item 2.3 - Plant & Machinery
   'plant and machinery': { code: '2.3', name: 'Plant and Machinery' },
   'plant': { code: '2.3', name: 'Plant and Machinery' },
   'machinery': { code: '2.3', name: 'Plant and Machinery' },
-  'labour': { code: '2.4', name: 'Labour' },
-  'labor': { code: '2.4', name: 'Labour' },
+  'all plant': { code: '2.3', name: 'Plant and Machinery' },
+  
+  // Item 2.4 - Subcontractor
+  'subcontractor': { code: '2.4', name: 'Subcontractor' },
+  'subcon': { code: '2.4', name: 'Subcontractor' },
+  'subbie': { code: '2.4', name: 'Subcontractor' },
+  'subcontractors': { code: '2.4', name: 'Subcontractor' },
+  
+  // Item 2.4.1 - Contract works
+  'contract works': { code: '2.4.1', name: 'Contract works' },
+  'subbie contract works': { code: '2.4.1', name: 'Contract works' },
+  'subcon contract works': { code: '2.4.1', name: 'Contract works' },
+  'subcontractors contract works': { code: '2.4.1', name: 'Contract works' },
+  
+  // Item 2.4.2 - Variation
+  'vo': { code: '2.4.2', name: 'Variation' },
+  'variation': { code: '2.4.2', name: 'Variation' },
+  'variations': { code: '2.4.2', name: 'Variation' },
+  'subbie vo': { code: '2.4.2', name: 'Variation' },
+  'subcon vo': { code: '2.4.2', name: 'Variation' },
+  'subcontractors vo': { code: '2.4.2', name: 'Variation' },
+  'subbie variation': { code: '2.4.2', name: 'Variation' },
+  'subcon variation': { code: '2.4.2', name: 'Variation' },
+  'subcontractors variation': { code: '2.4.2', name: 'Variation' },
+  'subbie variations': { code: '2.4.2', name: 'Variation' },
+  'subcon variations': { code: '2.4.2', name: 'Variation' },
+  'subcontractors variations': { code: '2.4.2', name: 'Variation' },
+  
+  // Item 2.4.3 - Claim
+  'claim': { code: '2.4.3', name: 'Claim' },
+  'claims': { code: '2.4.3', name: 'Claim' },
+  'subbie claim': { code: '2.4.3', name: 'Claim' },
+  'subcon claim': { code: '2.4.3', name: 'Claim' },
+  'subcontractors claim': { code: '2.4.3', name: 'Claim' },
+  'subbie claims': { code: '2.4.3', name: 'Claim' },
+  'subcon claims': { code: '2.4.3', name: 'Claim' },
+  'subcontractors claims': { code: '2.4.3', name: 'Claim' },
+  
+  // Other cost categories (keeping existing)
+  'labour': { code: '2.5', name: 'Labour' },
+  'labor': { code: '2.5', name: 'Labour' },
   'manpower': { code: '2.5', name: 'Manpower (Labour) for Works' },
-  'subcontractor': { code: '2.5', name: 'Subcontractor' },
-  'subcon': { code: '2.5', name: 'Subcontractor' },
   'staff': { code: '2.6', name: 'Staff' },
   'admin': { code: '2.7', name: 'Administration' },
   'administration': { code: '2.7', name: 'Administration' },
