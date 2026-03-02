@@ -1782,6 +1782,21 @@ function matchFinancialType(text: string, financialTypes: string[]): string | nu
   return null
 }
 
+// Helper: Get Item_Code from metric name using PARENT_ITEM_MAP
+// This ensures we filter by exact Item_Code (e.g., 2.4) instead of Data_Type text matching
+function getItemCodeFromMetric(metricName: string | null): string | null {
+  if (!metricName) return null
+  const lowerMetric = metricName.toLowerCase()
+  
+  // Direct lookup in PARENT_ITEM_MAP
+  for (const [keyword, info] of Object.entries(PARENT_ITEM_MAP)) {
+    if (lowerMetric.includes(keyword)) {
+      return info.code
+    }
+  }
+  return null
+}
+
 // Extract the metric (Data_Type) from comparison text
 function extractComparisonMetric(expandedQuestion: string, dataTypes: string[]): string | null {
   const lowerQ = expandedQuestion.toLowerCase()
@@ -1968,14 +1983,21 @@ function handleComparisonQuery(data: FinancialRow[], project: string, question: 
         { sheet: targetSheet, finType: finType1! },
       ]
       
+      // Get Item_Code for exact matching (avoids matching children)
+      const targetItemCode = getItemCodeFromMetric(targetDataType)
+      
       for (const source of sources) {
         let filtered = projectData.filter(d => 
           d.Sheet_Name === source.sheet && 
           d.Financial_Type === source.finType
         )
         
-        if (targetDataType) {
-          filtered = filtered.filter(d => d.Data_Type.toLowerCase().includes(targetDataType.toLowerCase()))
+        // Use EXACT Item_Code match if available, otherwise exact Data_Type match
+        if (targetItemCode) {
+          filtered = filtered.filter(d => d.Item_Code === targetItemCode)
+        } else if (targetDataType) {
+          // Exact match to avoid matching children (e.g., "Subcontractor" not "Contract Works")
+          filtered = filtered.filter(d => d.Data_Type.toLowerCase() === targetDataType.toLowerCase())
         }
         
         if (date.month) {
@@ -2006,12 +2028,19 @@ function handleComparisonQuery(data: FinancialRow[], project: string, question: 
     label2 = r2.label
   } else {
     // Compare different Financial_Types (existing logic)
+    const targetItemCode = getItemCodeFromMetric(targetDataType)
+    
     const getValueForType = (finType: string, date?: { month?: string | null; year?: string | null }): { total: number; rows: FinancialRow[] } => {
       let filtered = projectData.filter(d => d.Sheet_Name === targetSheet)
       filtered = filtered.filter(d => d.Financial_Type === finType)
-      if (targetDataType) {
-        filtered = filtered.filter(d => d.Data_Type.toLowerCase().includes(targetDataType.toLowerCase()))
+      
+      // Use EXACT Item_Code match if available
+      if (targetItemCode) {
+        filtered = filtered.filter(d => d.Item_Code === targetItemCode)
+      } else if (targetDataType) {
+        filtered = filtered.filter(d => d.Data_Type.toLowerCase() === targetDataType.toLowerCase())
       }
+      
       if (date?.month) {
         filtered = filtered.filter(d => d.Month === date.month)
       }
