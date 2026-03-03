@@ -1577,10 +1577,65 @@ function handleDetailCompare(
   
   const isDetail = lowerQ === 'detail'
   const isMore = lowerQ === 'more'
+  const detailMatch = lowerQ.match(/^detail\s+(\d+)$/)
   
-  if (!isDetail && !isMore) return null
+  if (!isDetail && !isMore && !detailMatch) return null
 
   const projectData = data.filter(d => d._project === project)
+
+  // Handle "detail N" - drill down into specific child's sub-items
+  if (detailMatch) {
+    const childIndex = parseInt(detailMatch[1]) - 1
+    if (childIndex < 0 || childIndex >= context.children.length) {
+      return {
+        text: `❌ Invalid detail number. Please use a number between 1 and ${context.children.length}.`,
+        candidates: []
+      }
+    }
+
+    const selectedChild = context.children[childIndex]
+
+    // Find children of the selected child
+    const grandChildren: Array<{ code: string; name: string }> = []
+    const grandChildPrefix = selectedChild.code + '.'
+    const seenCodes = new Set<string>()
+
+    for (const row of projectData) {
+      if (row.Sheet_Name === context.targetSheet && row.Item_Code.startsWith(grandChildPrefix)) {
+        const remaining = row.Item_Code.slice(grandChildPrefix.length)
+        // Only direct children (no further dots)
+        if (!remaining.includes('.') && !seenCodes.has(row.Item_Code)) {
+          seenCodes.add(row.Item_Code)
+          grandChildren.push({ code: row.Item_Code, name: row.Data_Type })
+        }
+      }
+    }
+
+    if (grandChildren.length === 0) {
+      return {
+        text: `❌ No sub-items found for Item ${selectedChild.code} (${selectedChild.name}). This is a leaf-level item.`,
+        candidates: []
+      }
+    }
+
+    // Sort by Item_Code
+    grandChildren.sort((a, b) => {
+      const aParts = a.code.split('.').map(Number)
+      const bParts = b.code.split('.').map(Number)
+      for (let i = 0; i < Math.max(aParts.length, bParts.length); i++) {
+        const diff = (aParts[i] || 0) - (bParts[i] || 0)
+        if (diff !== 0) return diff
+      }
+      return 0
+    })
+
+    // Update context to drill into this child
+    context.targetDataType = selectedChild.name
+    context.parentItemCode = selectedChild.code
+    context.children = grandChildren
+    lastCompareDetailPage = 0
+    // Fall through to display
+  }
   
   // Handle pagination
   const pageSize = 20
@@ -3367,40 +3422,47 @@ function answerQuestion(data: FinancialRow[], project: string, question: string,
     return { text: 'No data found for this project.', candidates: [] }
   }
 
-  // Step 0: Check if this is an Analyze or Detail query — highest priority
+  // Step 0: Check if this is an Analyze query — highest priority
   if (isAnalyzeQuery(question)) {
     return handleAnalyzeQuery(data, project)
   }
-  
-  if (isDetailQuery(question)) {
-    const detailResult = handleDetailQuery(data, project, question)
-    if (detailResult) return detailResult
-  }
 
-  // Step 0a: Check if this is a Total query — handle with dedicated logic
-  const totalResult = handleTotalQuery(data, project, question, defaultMonth)
-  if (totalResult) return totalResult
-
-  // Step 0a: Check if this is a Detail/More command for Trend drill-down
-  const detailTrendResult = handleDetailTrend(data, project, question)
-  if (detailTrendResult) return detailTrendResult
-
-  // Step 0ab: Check if this is a Trend query — handle with dedicated logic
-  const trendResult = handleTrendQuery(data, project, question, defaultMonth)
-  if (trendResult) return trendResult
-
-  // Step 0b1: Check if this is a Detail Compare command (after Compare query)
-  const detailCompareResult = handleDetailCompare(data, project, question, defaultMonth)
-  if (detailCompareResult) return detailCompareResult
-
-  // Step 0b1a: Fallback for "detail" or "more" commands when no context found
+  // Step 0a: Check Detail/More for context-aware handlers FIRST
+  // Priority: Trend context → Compare context → Analyze context
+  // This ensures "detail N" after a Trend drills into Trend sub-items,
+  // not the Analyze handler which would return "No analysis results found"
   const lowerQ = question.toLowerCase().trim()
-  if (lowerQ === 'detail' || lowerQ === 'more') {
+  const isDetailOrMore = lowerQ === 'detail' || lowerQ === 'more' || /^detail\s+\d+(\.\d+)?$/i.test(lowerQ)
+
+  if (isDetailOrMore) {
+    // Try Trend detail first (if Trend context exists)
+    const detailTrendResult = handleDetailTrend(data, project, question)
+    if (detailTrendResult) return detailTrendResult
+
+    // Try Compare detail second (if Compare context exists)
+    const detailCompareResult = handleDetailCompare(data, project, question, defaultMonth)
+    if (detailCompareResult) return detailCompareResult
+
+    // Try Analyze detail last (fallback)
+    if (isDetailQuery(question)) {
+      const detailResult = handleDetailQuery(data, project, question)
+      if (detailResult) return detailResult
+    }
+
+    // No context found for any handler
     return {
-      text: '❌ No previous query found to drill down into.\n\nPlease run a query first:\n• **Compare:** e.g., "compare cash flow oct 2025 vs jan 2026"\n• **Trend:** e.g., "trend cashflow cost"\n• **Analyze:** e.g., "analyze gross profit"\n\nThen type **detail** to see sub-items.',
+      text: '❌ No previous query found to drill down into.\n\nPlease run a query first:\n• **Trend:** e.g., "trend cashflow cost"\n• **Compare:** e.g., "compare cashflow subbie 9 2025 vs 12 2025"\n• **Analyze:** e.g., "Analyze"\n\nThen type **detail** to see sub-items.',
       candidates: []
     }
   }
+
+  // Step 0b: Check if this is a Total query — handle with dedicated logic
+  const totalResult = handleTotalQuery(data, project, question, defaultMonth)
+  if (totalResult) return totalResult
+
+  // Step 0c: Check if this is a Trend query — handle with dedicated logic
+  const trendResult = handleTrendQuery(data, project, question, defaultMonth)
+  if (trendResult) return trendResult
 
   // Step 0b: Check if this is a comparison query — handle it with dedicated logic
   const comparisonResult = handleComparisonQuery(data, project, question, defaultMonth)
