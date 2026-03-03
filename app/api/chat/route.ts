@@ -1395,6 +1395,9 @@ function handleTrendQuery(data: FinancialRow[], project: string, question: strin
     return 0
   })
 
+  // Clear Compare context so "detail" after Trend goes to Trend handler
+  compareContextCache.delete(project)
+
   trendContextCache.set(project, {
     itemCode: matchedItemCode,
     itemName: matchedDataType,
@@ -2377,6 +2380,9 @@ function handleComparisonQuery(data: FinancialRow[], project: string, question: 
   const displayLabel = compareByDate
     ? (result1.rows.length > 0 ? result1.rows[0].Sheet_Name : targetSheet)
     : finType1!
+
+  // Clear Trend context so "detail" after Compare goes to Compare handler
+  trendContextCache.delete(project)
 
   // Save context for Detail drill-down
   compareContextCache.set(project, {
@@ -3728,6 +3734,19 @@ function answerQuestion(data: FinancialRow[], project: string, question: string,
       const standaloneMatch = expandedQuestion.match(standalonePattern)
       if (standaloneMatch && standaloneMatch[1].length <= 10) {
         targetItemCode = standaloneMatch[1]
+      }
+    }
+  }
+
+  // If no explicit item code found, try PARENT_ITEM_MAP to get Item_Code from metric keywords
+  // This ensures "projected cost" resolves to Item 2 (Less : Cost), not a child like 2.1.1
+  if (!targetItemCode) {
+    const sortedParentItems = Object.entries(PARENT_ITEM_MAP).sort((a, b) => b[0].length - a[0].length)
+    for (const [keyword, info] of sortedParentItems) {
+      const pattern = new RegExp(`\\b${keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\s+/g, '\\s+')}\\b`, 'i')
+      if (pattern.test(expandedQuestion)) {
+        targetItemCode = info.code
+        break
       }
     }
   }
