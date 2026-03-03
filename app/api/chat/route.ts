@@ -1837,11 +1837,16 @@ function handleListQuery(data: FinancialRow[], project: string, question: string
     sourceData = projectData
   }
 
+  // Filter out non-financial metadata items (Project Code, Report Date, etc.)
+  // Only keep items with numeric Item_Codes (e.g., "1", "2.1", "2.4.1")
+  const isNumericItemCode = (code: string): boolean => /^\d+(\.\d+)*$/.test(code)
+
   // Build unique items map
   const itemsMap = new Map<string, { code: string; name: string; tier: number }>()
 
   for (const row of sourceData) {
     if (!row.Item_Code || !row.Data_Type) continue
+    if (!isNumericItemCode(row.Item_Code)) continue  // Skip non-numeric codes
 
     const code = row.Item_Code
     if (!itemsMap.has(code)) {
@@ -1929,6 +1934,14 @@ function handleListQuery(data: FinancialRow[], project: string, question: string
     const tier2Items = allItems.filter(item => 
       item.tier === 2 && item.code.startsWith(tier1.code + '.')
     )
+
+    // For items without children (e.g., Item 3 Gross Profit, Item 7 Net Profit),
+    // show a self-referencing entry so users know they can query it
+    if (tier2Items.length === 0) {
+      // Extract a short display name from the Data_Type
+      const shortName = tier1.name.split('(')[0].trim()
+      response += `  ${tier1.code} - ${shortName}\n`
+    }
 
     for (const tier2 of tier2Items) {
       if (tier2.tier > maxTier) continue
