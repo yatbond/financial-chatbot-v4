@@ -2192,20 +2192,28 @@ function handleComparisonQuery(data: FinancialRow[], project: string, question: 
       // Use actual sheet names found in the data
       const sources: Array<{ sheet: string | null; finTypePattern: string; displayFinType: string }> = []
       
-      // For cash flow queries, prefer the Cash Flow sheet
-      // Try multiple financial type patterns that might exist in the data
-      if (cashFlowSheet) {
+      // PRIORITY 1: Try targetSheet first (user explicitly asked for this sheet)
+      // e.g., "committed" → targetSheet = "Committed Cost"
+      if (targetSheet && targetSheet !== 'Financial Status') {
+        // Try with matching financial type first, then any type on that sheet
+        if (finType1) {
+          sources.push({ sheet: targetSheet, finTypePattern: finType1, displayFinType: finType1 })
+        }
+        // Try sheet name as financial type pattern (e.g., "Committed Cost" sheet might have "Committed Value / Cost as at" type)
+        sources.push({ sheet: targetSheet, finTypePattern: '', displayFinType: finType1 || targetSheet })
+      }
+      
+      // PRIORITY 2: For cash flow queries, try the Cash Flow sheet
+      if (cashFlowSheet && (targetSheet === cashFlowSheet || !targetSheet || targetSheet === 'Financial Status')) {
         sources.push({ sheet: cashFlowSheet, finTypePattern: 'Cash Flow', displayFinType: 'Cash Flow' })
         sources.push({ sheet: cashFlowSheet, finTypePattern: 'Cash Flow Actual', displayFinType: 'Cash Flow' })
-        sources.push({ sheet: cashFlowSheet, finTypePattern: '', displayFinType: 'Cash Flow' }) // Any financial type
+        sources.push({ sheet: cashFlowSheet, finTypePattern: '', displayFinType: 'Cash Flow' })
       }
-      // Fallback to Financial Status with various financial type names
+      
+      // PRIORITY 3: Fallback to Financial Status
       sources.push({ sheet: 'Financial Status', finTypePattern: 'Cash Flow Actual received & paid as at', displayFinType: 'Cash Flow' })
       if (finType1) {
         sources.push({ sheet: 'Financial Status', finTypePattern: finType1, displayFinType: finType1 })
-      }
-      if (targetSheet && targetSheet !== 'Financial Status') {
-        sources.push({ sheet: targetSheet, finTypePattern: '', displayFinType: finType1 || 'Cash Flow' })
       }
       
       for (const source of sources) {
