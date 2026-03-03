@@ -233,6 +233,18 @@ const trendContextCache: Map<string, TrendContext> = new Map()
 let lastDetailPage: number = 0  // Track pagination for "more" command
 
 // ============================================
+// List Context Cache (for "list" + "more")
+// ============================================
+interface ListContext {
+  project: string
+  allItems: Array<{ code: string; name: string; tier: number }>  // All items with tier info
+  timestamp: number
+}
+
+const listContextCache: Map<string, ListContext> = new Map()
+const LIST_CACHE_TTL = 30 * 60 * 1000  // 30 minutes
+
+// ============================================
 // Compare Context Cache (for Detail drill-down)
 // ============================================
 interface CompareContext {
@@ -1020,10 +1032,10 @@ function parseTrendQuery(question: string): {
   const lowerQ = question.toLowerCase().trim()
   // Remove "trend" prefix
   const afterTrend = lowerQ.replace(/^trend\s+/, '').trim()
-  
+
   // Expand acronyms in the remaining text
   const expanded = expandAcronyms(afterTrend)
-  
+
   let sheetName: string | null = null
   let dataTypeFilter: string | null = null
   let itemCode: string | null = null
@@ -1041,6 +1053,17 @@ function parseTrendQuery(question: string): {
 
   // Re-expand after trimming month count
   const expandedClean = expandAcronyms(rawMetric)
+
+  // === FEATURE 2: Detect standalone item codes (e.g., "2.1", "2.4.1") ===
+  // Pattern: matches "2.1", "2.4.1", "1.2.3" but NOT standalone numbers like "10" or "2025"
+  const itemCodePattern = /\b(\d+\.\d+(?:\.\d+)*)\b/
+  const itemCodeMatch = expandedClean.match(itemCodePattern)
+
+  if (itemCodeMatch) {
+    itemCode = itemCodeMatch[1]
+    // Remove item code from the query for further processing
+    rawMetric = rawMetric.replace(itemCodeMatch[0], '').trim()
+  }
 
   // Try to detect sheet/financial type from the query
   const sortedSheetEntries = Object.entries(TREND_SHEET_MAP).sort((a, b) => b[0].length - a[0].length)
@@ -1127,6 +1150,14 @@ function handleTrendQuery(data: FinancialRow[], project: string, question: strin
 
   const parsed = parseTrendQuery(question)
   const projectData = data.filter(d => d._project === project)
+
+  // === FEATURE 2: If item code was extracted, look up its Data_Type ===
+  if (parsed.itemCode && !parsed.dataTypeFilter) {
+    const itemRow = projectData.find(d => d.Item_Code === parsed.itemCode)
+    if (itemRow) {
+      parsed.dataTypeFilter = itemRow.Data_Type
+    }
+  }
 
   if (projectData.length === 0) {
     return { text: 'No data found for this project.', candidates: [] }
@@ -1770,6 +1801,179 @@ function handleDetailCompare(
 }
 
 // ============================================
+// List Query Handler
+// ============================================
+
+// Detect if a query is a List query
+function isListQuery(question: string): boolean {
+  const lowerQ = question.toLowerCase().trim()
+  return lowerQ === 'list' || lowerQ === 'list all' || lowerQ.startsWith('list ')
+}
+
+// Get tier level from item code (e.g., "2.1.3" → 3, "2.1" → 2, "2" → 1)
+function getTierLevel(itemCode: string): number {
+  return itemCode.split('.').length
+}
+
+// Handle a List query
+function handleListQuery(data: FinancialRow[], project: string, question: string): FuzzyResult | null {
+  if (!isListQuery(question)) return null
+
+  const lowerQ = question.toLowerCase().trim()
+  const showAll = lowerQ === 'list all'
+
+  const projectData = data.filter(d => d._project === project)
+
+  if (projectData.length === 0) {
+    return { text: 'No data found for this project.', candidates: [] }
+  }
+
+  // Get unique Item_Code + Data_Type pairs from Financial Status sheet (most complete)
+  let sourceData = projectData.filter(d => d.Sheet_Name === 'Financial Status')
+
+  // Fallback to any sheet if Financial Status is empty
+  if (sourceData.length === 0) {
+    sourceData = projectData
+  }
+
+  // Build unique items map
+  const itemsMap = new Map<string, { code: string; name: string; tier: number }>()
+
+  for (const row of sourceData) {
+    if (!row.Item_Code || !row.Data_Type) continue
+
+    const code = row.Item_Code
+    if (!itemsMap.has(code)) {
+      itemsMap.set(code, {
+        code,
+        name: row.Data_Type,
+        tier: getTierLevel(code)
+      })
+    }
+  }
+
+  // Convert to array and sort by Item_Code numerically
+  const allItems = Array.from(itemsMap.values()).sort((a, b) => {
+    const partsA = a.code.split('.').map(Number)
+    const partsB = b.code.split('.').map(Number)
+    for (let i = 0; i < Math.max(partsA.length, partsB.length); i++) {
+      const diff = (partsA[i] || 0) - (partsB[i] || 0)
+      if (diff !== 0) return diff
+    }
+    return 0
+  })
+
+  // Save to cache for "more" command
+  listContextCache.set(project, {
+    project,
+    allItems,
+    timestamp: Date.now()
+  })
+
+  // Determine max tier to show
+  const maxTier = showAll ? 4 : 2  // "list all" shows all, "list" shows top 2 tiers
+
+  // Build hierarchical display
+  let response = `## Financial Headings\n\n`
+
+  // Group items by parent for hierarchical display
+  const itemsByParent = new Map<string, typeof allItems>()
+
+  for (const item of allItems) {
+    if (item.tier === 1) {
+      if (!itemsByParent.has('')) itemsByParent.set('', [])
+      itemsByParent.get('')!.push(item)
+    } else {
+      const parentCode = item.code.split('.').slice(0, -1).join('.')
+      if (!itemsByParent.has(parentCode)) itemsByParent.set(parentCode, [])
+      itemsByParent.get(parentCode)!.push(item)
+    }
+  }
+
+  // Helper function to display items recursively
+  const displayItems = (parentCode: string, indent: number, maxTierLevel: number): string => {
+    const items = itemsByParent.get(parentCode) || []
+    let output = ''
+    const prefix = '  '.repeat(indent)
+
+    for (const item of items) {
+      if (item.tier > maxTierLevel) continue
+
+      // Format: "  2.1 - Less : Cost - Preliminaries"
+      output += `${prefix}${item.code} - ${item.name}\n`
+
+      // Recursively show children if within tier limit
+      if (item.tier < maxTierLevel) {
+        output += displayItems(item.code, indent + 1, maxTierLevel)
+      }
+    }
+
+    return output
+  }
+
+  // Display top-level items (tier 1) with their children
+  const tier1Items = allItems.filter(item => item.tier === 1)
+
+  for (const tier1 of tier1Items) {
+    if (tier1.tier > maxTier) continue
+
+    // Add tier 1 as heading
+    response += `### ${tier1.name} (Item ${tier1.code})\n`
+
+    // Add tier 2 items under this tier 1
+    const tier2Items = allItems.filter(item => 
+      item.tier === 2 && item.code.startsWith(tier1.code + '.')
+    )
+
+    for (const tier2 of tier2Items) {
+      if (tier2.tier > maxTier) continue
+      response += `  ${tier2.code} - ${tier2.name}\n`
+
+      // Add tier 3+ if showing all
+      if (showAll) {
+        const childItems = allItems.filter(item =>
+          item.tier > 2 && item.code.startsWith(tier2.code + '.')
+        )
+        for (const child of childItems) {
+          if (child.tier > maxTier) continue
+          const indent = '  '.repeat(child.tier)
+          response += `${indent}${child.code} - ${child.name}\n`
+        }
+      }
+    }
+
+    response += '\n'
+  }
+
+  // Add hint for "more" command
+  if (!showAll) {
+    response += `💡 Type **'list all'** or **'more'** to see all sub-items (3rd and 4th tier)\n`
+  } else {
+    response += `*Showing all ${allItems.length} items*\n`
+  }
+
+  return { text: response, candidates: [] }
+}
+
+// Handle "more" after list
+function handleListMore(data: FinancialRow[], project: string, question: string): FuzzyResult | null {
+  const lowerQ = question.toLowerCase().trim()
+
+  if (lowerQ !== 'more') return null
+
+  // Check if there's a list context
+  const context = listContextCache.get(project)
+
+  if (!context || (Date.now() - context.timestamp > LIST_CACHE_TTL)) {
+    // No list context - might be for compare/trend detail
+    return null
+  }
+
+  // Re-run list query with all tiers
+  return handleListQuery(data, project, 'list all')
+}
+
+// ============================================
 // Comparison Query Handler
 // ============================================
 
@@ -1959,8 +2163,19 @@ function getItemCodeFromMetric(metricName: string | null): string | null {
 }
 
 // Extract the metric (Data_Type) from comparison text
-function extractComparisonMetric(expandedQuestion: string, dataTypes: string[]): string | null {
+function extractComparisonMetric(expandedQuestion: string, dataTypes: string[]): { metric: string | null; itemCode: string | null } {
   const lowerQ = expandedQuestion.toLowerCase()
+
+  // === FEATURE 2: Detect item codes FIRST (highest priority) ===
+  // Pattern: matches "2.1", "2.4.1", "1.2.3" but NOT standalone numbers like "10" or "2025"
+  const itemCodePattern = /\b(\d+\.\d+(?:\.\d+)*)\b/
+  const itemCodeMatch = lowerQ.match(itemCodePattern)
+
+  if (itemCodeMatch) {
+    // Found an item code - return it directly
+    // The caller will look up the corresponding Data_Type from the data
+    return { metric: null, itemCode: itemCodeMatch[1] }
+  }
 
   // First: Check known acronyms for exact parent-level matching
   // This prevents matching child items (e.g., "Contract Works" instead of "Subcontractor")
@@ -2040,7 +2255,7 @@ function extractComparisonMetric(expandedQuestion: string, dataTypes: string[]):
     if (matches.length > 0) {
       // Sort by length - shortest first (parent level)
       matches.sort((a, b) => a.length - b.length)
-      return matches[0]
+      return { metric: matches[0], itemCode: null }
     }
   }
 
@@ -2058,7 +2273,7 @@ function extractComparisonMetric(expandedQuestion: string, dataTypes: string[]):
     if (lowerQ.includes(keyword)) {
       for (const expansion of expansions) {
         const match = dataTypes.find(dt => dt.toLowerCase().includes(expansion))
-        if (match) return match
+        if (match) return { metric: match, itemCode: null }
       }
     }
   }
@@ -2084,7 +2299,7 @@ function extractComparisonMetric(expandedQuestion: string, dataTypes: string[]):
     }
   }
 
-  return bestMatch
+  return { metric: bestMatch, itemCode: null }
 }
 
 // Handle comparison query - returns formatted comparison result or null if not a comparison
@@ -2109,8 +2324,18 @@ function handleComparisonQuery(data: FinancialRow[], project: string, question: 
   const finType1 = matchFinancialType(compParts.side1, financialTypes)
   const finType2 = matchFinancialType(compParts.side2, financialTypes)
 
-  // Extract the metric (Data_Type) to compare
-  const targetDataType = extractComparisonMetric(expandedQuestion, dataTypes)
+  // === FEATURE 2: Extract the metric (Data_Type) OR item code to compare ===
+  const metricResult = extractComparisonMetric(expandedQuestion, dataTypes)
+  let targetDataType = metricResult.metric
+  let extractedItemCode = metricResult.itemCode
+
+  // If an item code was extracted, look up its Data_Type from the data
+  if (extractedItemCode && !targetDataType) {
+    const itemRow = projectData.find(d => d.Item_Code === extractedItemCode)
+    if (itemRow) {
+      targetDataType = itemRow.Data_Type
+    }
+  }
 
   // Parse dates from both sides
   const date1 = parseDate(compParts.side1, defaultMonth)
@@ -2119,6 +2344,13 @@ function handleComparisonQuery(data: FinancialRow[], project: string, question: 
   // Determine comparison type: by Financial_Type or by Date
   const compareByDate = finType1 && finType1 === finType2 && (date1.month || date2.month)
   const compareByFinType = finType1 && finType2 && finType1 !== finType2
+
+  // === FEATURE 2: Use extracted item code if available ===
+  // Priority: extractedItemCode > getItemCodeFromMetric
+  let targetItemCode: string | null = extractedItemCode
+  if (!targetItemCode && targetDataType) {
+    targetItemCode = getItemCodeFromMetric(targetDataType)
+  }
 
   // Detect target sheet from query (e.g., "cashflow" → "Cash Flow")
   // IMPORTANT: For cross-type comparisons (compareByFinType), ALWAYS use Financial Status
@@ -2169,9 +2401,6 @@ function handleComparisonQuery(data: FinancialRow[], project: string, question: 
     // IMPORTANT: For "cash flow" type queries, data may be in different sheets:
     // - Cash Flow sheet (monthly data) for historical months
     // - Financial Status sheet (Cash Flow Actual received & paid as at) for current month
-    
-    // Get Item_Code for exact matching (avoids matching children)
-    const targetItemCode = getItemCodeFromMetric(targetDataType)
     
     // Helper to find the actual sheet name that matches a pattern
     const findMatchingSheet = (pattern: string): string | null => {
@@ -2268,8 +2497,7 @@ function handleComparisonQuery(data: FinancialRow[], project: string, question: 
     label2 = r2.label
   } else {
     // Compare different Financial_Types (existing logic)
-    const targetItemCode = getItemCodeFromMetric(targetDataType)
-    
+
     const getValueForType = (finType: string, date?: { month?: string | null; year?: string | null }): { total: number; rows: FinancialRow[] } => {
       let filtered = projectData.filter(d => d.Sheet_Name === targetSheet)
       filtered = filtered.filter(d => d.Financial_Type === finType)
@@ -3450,7 +3678,15 @@ function answerQuestion(data: FinancialRow[], project: string, question: string,
     return { text: 'No data found for this project.', candidates: [] }
   }
 
-  // Step 0: Check if this is an Analyze query — highest priority
+  // Step 0: Check if this is a List query — highest priority
+  const listResult = handleListQuery(data, project, question)
+  if (listResult) return listResult
+
+  // Step 0a: Check if this is "more" after a list query
+  const listMoreResult = handleListMore(data, project, question)
+  if (listMoreResult) return listMoreResult
+
+  // Step 0b: Check if this is an Analyze query
   if (isAnalyzeQuery(question)) {
     return handleAnalyzeQuery(data, project)
   }
