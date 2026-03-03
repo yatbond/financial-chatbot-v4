@@ -1426,8 +1426,9 @@ function handleTrendQuery(data: FinancialRow[], project: string, question: strin
     return 0
   })
 
-  // Clear Compare context so "detail" after Trend goes to Trend handler
+  // Clear other contexts so "detail"/"more" after Trend goes to Trend handler
   compareContextCache.delete(project)
+  listContextCache.delete(project)
 
   trendContextCache.set(project, {
     itemCode: matchedItemCode,
@@ -1862,6 +1863,10 @@ function handleListQuery(data: FinancialRow[], project: string, question: string
     }
     return 0
   })
+
+  // Clear other contexts so "more" after list goes to list handler
+  trendContextCache.delete(project)
+  compareContextCache.delete(project)
 
   // Save to cache for "more" command
   listContextCache.set(project, {
@@ -2617,8 +2622,9 @@ function handleComparisonQuery(data: FinancialRow[], project: string, question: 
     ? (result1.rows.length > 0 ? result1.rows[0].Sheet_Name : targetSheet)
     : finType1!
 
-  // Clear Trend context so "detail" after Compare goes to Compare handler
+  // Clear other contexts so "detail"/"more" after Compare goes to Compare handler
   trendContextCache.delete(project)
+  listContextCache.delete(project)
 
   // Save context for Detail drill-down
   compareContextCache.set(project, {
