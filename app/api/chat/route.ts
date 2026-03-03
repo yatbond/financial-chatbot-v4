@@ -82,18 +82,18 @@ import { google } from 'googleapis'
  *
  * DATA TYPE / ITEM SHORTCUTS (ACRONYM_MAP below):
  *   gp                → Gross Profit (Item 3)
- *   np, net profit    → Net Profit (Item 7)
+ *   np, net profit    → Acc. Net Profit/(Loss) (Item 7)
  *   cost, total cost  → Less : Cost (Item 2)
- *   prelim, preliminary, preliminaries → Preliminaries (Item 2.1)
+ *   prelim, preliminary, preliminaries, total prelim → Preliminaries (Item 2.1)
+ *   supervision, staff → Manpower (Mgt. & Supervision) (Item 2.1.1)
  *   material, materials, material cost → Materials (Item 2.2)
  *   plant, machinery, all plant        → Plant & Machinery (Item 2.3)
- *   subcon, sub, subbie, subcontractors → Subcontractor (Item 2.4)
- *   contract works, subbie/subcon contract works → Contract works (Item 2.4.1)
- *   vo, variation, subbie/subcon vo/variation → Variation (Item 2.4.2)
- *   claim, claims, subbie/subcon claim → Claim (Item 2.4.3)
- *   supervision, staff → Manpower (Mgt. & Supervision) (Item 2.1.1)
+ *   subcon, sub, subbie, subcontractor, subcontractors → Less : Cost - Subcontractor (Item 2.4)
+ *   contract works, subbie/subcon/subcontractors contract works → -Contract Works (Item 2.4.1)
+ *   vo, variation(s), subbie/subcon/subcontractors vo/variation(s) → -Variation (Item 2.4.2)
+ *   claim(s), subbie/subcon/subcontractors claim(s) → -Claim (Item 2.4.3)
+ *   labour, labor     → Manpower (Labour) (Item 2.5)
  *   rebar             → Reinforcement (Item 2.6)
- *   labour, labor     → Manpower (Labour)
  *   income, revenue   → Income (Item 1)
  *   profit            → Gross Profit (Item 3)
  *   loss              → Net Loss
@@ -155,24 +155,30 @@ const ACRONYM_MAP: Record<string, string> = {
   'contract works': 'contract works',
   'subbie contract works': 'contract works',
   'subcon contract works': 'contract works',
+  'subcontractors contract works': 'contract works',
 
   // === Item / category shortcuts (Item_Code 2.4.2 - Variation) ===
   'vo': 'variation',
   'variations': 'variation',
   'subbie vo': 'variation',
   'subcon vo': 'variation',
+  'subcontractors vo': 'variation',
   'subbie variation': 'variation',
   'subcon variation': 'variation',
+  'subcontractors variation': 'variation',
   'subbie variations': 'variation',
   'subcon variations': 'variation',
+  'subcontractors variations': 'variation',
 
   // === Item / category shortcuts (Item_Code 2.4.3 - Claim) ===
   'claim': 'claim',
   'claims': 'claim',
   'subbie claim': 'claim',
   'subcon claim': 'claim',
+  'subcontractors claim': 'claim',
   'subbie claims': 'claim',
   'subcon claims': 'claim',
+  'subcontractors claims': 'claim',
 
   // === Other shortcuts ===
   'rebar': 'reinforcement',
@@ -236,6 +242,13 @@ interface CompareContext {
   targetDataType: string | null
   project: string
   children: Array<{ code: string; name: string }>  // Cached children list
+  // For compareByDate support
+  isCompareByDate: boolean
+  date1?: { month?: string | null; year?: string | null }
+  date2?: { month?: string | null; year?: string | null }
+  parentItemCode?: string  // Parent item code for finding children
+  displayFinType?: string  // Short display name (e.g., "Cash Flow" instead of full Financial_Type)
+  actualFinType?: string   // Actual Financial_Type from the data (e.g., "Cash Flow" from Cash Flow sheet)
 }
 
 // Global cache for last Compare context (per project)
@@ -632,8 +645,10 @@ function handleMonthlyCategory(data: FinancialRow[], project: string, question: 
     'manpower (labour) for works': '2.5',
     'manpower (labour)': '2.5',
     'manpower': '2.5',
-    'subcontractor': '2.5',
-    'subcon': '2.5',
+    'subcontractor': '2.4',
+    'subcontractors': '2.4',
+    'subcon': '2.4',
+    'subbie': '2.4',
     'staff': '2.6',
     'admin': '2.7',
     'administration': '2.7',
@@ -805,6 +820,19 @@ function parseDate(question: string, defaultMonth: string): ParsedQuery {
     }
   }
 
+  // Handle numeric month with 4-digit year: "10 2025" or "1 2026"
+  // Pattern: standalone number (1-12) followed by space and 4-digit year
+  const numericMonthYearMatch = lowerQ.match(/\b(\d{1,2})\s+(20[2-4]\d)\b/)
+  if (numericMonthYearMatch) {
+    const monthNum = parseInt(numericMonthYearMatch[1])
+    const yearNum = numericMonthYearMatch[2]
+    // Validate month is 1-12
+    if (monthNum >= 1 && monthNum <= 12) {
+      result.month = String(monthNum)
+      result.year = yearNum
+    }
+  }
+
   // Find 2-digit year (24, 25, etc.) - only if preceded by space and not part of month name
   // "feb 25" should be Feb + 2025, not Feb + month 25
   const twoDigitYearMatch = lowerQ.match(/\b(\d{2})\b(?!.*\d{4})/)
@@ -816,14 +844,17 @@ function parseDate(question: string, defaultMonth: string): ParsedQuery {
   }
 
   // Find month name or abbreviation - only if it doesn't conflict with year
-  for (let i = 0; i < monthNames.length; i++) {
-    if (lowerQ.includes(monthNames[i]) || lowerQ.includes(monthAbbr[i])) {
-      const monthNum = String(i + 1)
-      // Only set month if it doesn't look like a year (e.g., don't treat "2025" as month 20)
-      if (monthNum.length === 1 || (monthNum.length === 2 && monthNum !== '20' && monthNum !== '21' && monthNum !== '22' && monthNum !== '23')) {
-        result.month = monthNum
+  // Skip if we already found a numeric month
+  if (!result.month) {
+    for (let i = 0; i < monthNames.length; i++) {
+      if (lowerQ.includes(monthNames[i]) || lowerQ.includes(monthAbbr[i])) {
+        const monthNum = String(i + 1)
+        // Only set month if it doesn't look like a year (e.g., don't treat "2025" as month 20)
+        if (monthNum.length === 1 || (monthNum.length === 2 && monthNum !== '20' && monthNum !== '21' && monthNum !== '22' && monthNum !== '23')) {
+          result.month = monthNum
+        }
+        break
       }
-      break
     }
   }
 
@@ -1398,10 +1429,7 @@ function handleDetailTrend(
   
   const context = trendContextCache.get(project)
   if (!context) {
-    return { 
-      text: '❌ No previous Trend query found. Please run a Trend query first (e.g., "trend cashflow cost")', 
-      candidates: [] 
-    }
+    return null  // Let other detail handlers (Compare, Analyze) try
   }
 
   // Handle "detail N" - drill down into specific child
@@ -1549,10 +1577,65 @@ function handleDetailCompare(
   
   const isDetail = lowerQ === 'detail'
   const isMore = lowerQ === 'more'
+  const detailMatch = lowerQ.match(/^detail\s+(\d+)$/)
   
-  if (!isDetail && !isMore) return null
+  if (!isDetail && !isMore && !detailMatch) return null
 
   const projectData = data.filter(d => d._project === project)
+
+  // Handle "detail N" - drill down into specific child's sub-items
+  if (detailMatch) {
+    const childIndex = parseInt(detailMatch[1]) - 1
+    if (childIndex < 0 || childIndex >= context.children.length) {
+      return {
+        text: `❌ Invalid detail number. Please use a number between 1 and ${context.children.length}.`,
+        candidates: []
+      }
+    }
+
+    const selectedChild = context.children[childIndex]
+
+    // Find children of the selected child
+    const grandChildren: Array<{ code: string; name: string }> = []
+    const grandChildPrefix = selectedChild.code + '.'
+    const seenCodes = new Set<string>()
+
+    for (const row of projectData) {
+      if (row.Sheet_Name === context.targetSheet && row.Item_Code.startsWith(grandChildPrefix)) {
+        const remaining = row.Item_Code.slice(grandChildPrefix.length)
+        // Only direct children (no further dots)
+        if (!remaining.includes('.') && !seenCodes.has(row.Item_Code)) {
+          seenCodes.add(row.Item_Code)
+          grandChildren.push({ code: row.Item_Code, name: row.Data_Type })
+        }
+      }
+    }
+
+    if (grandChildren.length === 0) {
+      return {
+        text: `❌ No sub-items found for Item ${selectedChild.code} (${selectedChild.name}). This is a leaf-level item.`,
+        candidates: []
+      }
+    }
+
+    // Sort by Item_Code
+    grandChildren.sort((a, b) => {
+      const aParts = a.code.split('.').map(Number)
+      const bParts = b.code.split('.').map(Number)
+      for (let i = 0; i < Math.max(aParts.length, bParts.length); i++) {
+        const diff = (aParts[i] || 0) - (bParts[i] || 0)
+        if (diff !== 0) return diff
+      }
+      return 0
+    })
+
+    // Update context to drill into this child
+    context.targetDataType = selectedChild.name
+    context.parentItemCode = selectedChild.code
+    context.children = grandChildren
+    lastCompareDetailPage = 0
+    // Fall through to display
+  }
   
   // Handle pagination
   const pageSize = 20
@@ -1570,28 +1653,85 @@ function handleDetailCompare(
   const childrenToShow = context.children.slice(startIndex, startIndex + pageSize)
   const hasMore = startIndex + pageSize < context.children.length
 
-  let response = `## Detail: Comparing Sub-Items\n\n`
-  response += `**Comparing:** ${context.finType1} vs ${context.finType2}\n`
-  response += `**Metric:** ${context.targetDataType || 'All items'}\n\n`
+  // Build comparison labels based on comparison type
+  // Use displayFinType for friendly labels (e.g., "Cash Flow" not "Cash Flow Actual received & paid as at")
+  let label1: string, label2: string
+  if (context.isCompareByDate && context.date1 && context.date2) {
+    const monthNames = ['', 'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+    const m1 = context.date1.month ? monthNames[parseInt(context.date1.month)] : ''
+    const y1 = context.date1.year || ''
+    const m2 = context.date2.month ? monthNames[parseInt(context.date2.month)] : ''
+    const y2 = context.date2.year || ''
+    const displayName = context.displayFinType || context.finType1
+    label1 = `${displayName} (${m1} ${y1})`.trim()
+    label2 = `${displayName} (${m2} ${y2})`.trim()
+  } else {
+    label1 = context.finType1
+    label2 = context.finType2
+  }
 
-  // Parse dates from the original comparison (if any)
-  // For simplicity, we'll show the comparison for each child item
+  // Helper: match Financial_Type flexibly (exact OR contains)
+  // Needed because Cash Flow sheet has Financial_Type="Cash Flow" but
+  // matchFinancialType returns "Cash Flow Actual received & paid as at"
+  // NOTE: actualFinType is only used for compareByDate (same type, different dates)
+  // For compareByFinType, we must NOT leak actualFinType across both sides
+  const matchFinType = (rowFinType: string, targetFinType: string): boolean => {
+    if (rowFinType === targetFinType) return true
+    // Only use actualFinType for compareByDate (both sides are the same type)
+    if (context.isCompareByDate && context.actualFinType && rowFinType === context.actualFinType) return true
+    // Contains matching as fallback — but only if one is a clear substring of the other
+    // and they share meaningful keywords (not just short words)
+    const rowLower = rowFinType.toLowerCase()
+    const targetLower = targetFinType.toLowerCase()
+    // Only match if the shorter string is at least 60% of the longer string length
+    // This prevents "Cash Flow" matching "Cash Flow Actual received & paid as at" incorrectly
+    if (rowLower === targetLower) return true
+    const shorter = rowLower.length < targetLower.length ? rowLower : targetLower
+    const longer = rowLower.length < targetLower.length ? targetLower : rowLower
+    if (longer.includes(shorter) && shorter.length >= longer.length * 0.6) return true
+    return false
+  }
+
+  let response = `## Detail: Comparing Sub-Items\n\n`
+  response += `**Comparing:** ${label1} vs ${label2}\n`
+  response += `**Metric:** ${context.targetDataType || 'All items'}\n\n`
 
   let tableIndex = startIndex
   for (const child of childrenToShow) {
     tableIndex++
     
-    // Get values for this child from both Financial Types
-    let filtered1 = projectData.filter(d => 
-      d.Sheet_Name === context.targetSheet &&
-      d.Financial_Type === context.finType1 &&
-      d.Item_Code === child.code
-    )
-    let filtered2 = projectData.filter(d => 
-      d.Sheet_Name === context.targetSheet &&
-      d.Financial_Type === context.finType2 &&
-      d.Item_Code === child.code
-    )
+    let filtered1: FinancialRow[]
+    let filtered2: FinancialRow[]
+    
+    if (context.isCompareByDate && context.date1 && context.date2) {
+      // Compare by date: same Financial_Type, different dates
+      filtered1 = projectData.filter(d => 
+        d.Sheet_Name === context.targetSheet &&
+        matchFinType(d.Financial_Type, context.finType1) &&
+        d.Item_Code === child.code &&
+        (context.date1!.month ? d.Month === context.date1!.month : true) &&
+        (context.date1!.year ? d.Year === context.date1!.year : true)
+      )
+      filtered2 = projectData.filter(d => 
+        d.Sheet_Name === context.targetSheet &&
+        matchFinType(d.Financial_Type, context.finType1) &&
+        d.Item_Code === child.code &&
+        (context.date2!.month ? d.Month === context.date2!.month : true) &&
+        (context.date2!.year ? d.Year === context.date2!.year : true)
+      )
+    } else {
+      // Compare by Financial_Type: different types, optionally filtered by date
+      filtered1 = projectData.filter(d => 
+        d.Sheet_Name === context.targetSheet &&
+        matchFinType(d.Financial_Type, context.finType1) &&
+        d.Item_Code === child.code
+      )
+      filtered2 = projectData.filter(d => 
+        d.Sheet_Name === context.targetSheet &&
+        matchFinType(d.Financial_Type, context.finType2) &&
+        d.Item_Code === child.code
+      )
+    }
     
     const value1 = filtered1.reduce((sum, d) => sum + toNumber(d.Value), 0)
     const value2 = filtered2.reduce((sum, d) => sum + toNumber(d.Value), 0)
@@ -1611,8 +1751,8 @@ function handleDetailCompare(
     const sourceRef1 = filtered1.length > 0 ? ` ${formatSourceRef(filtered1[0])}` : ''
     const sourceRef2 = filtered2.length > 0 ? ` ${formatSourceRef(filtered2[0])}` : ''
     
-    response += `| ${context.finType1} | ${formatCurrency(value1)}${sourceRef1} |\n`
-    response += `| ${context.finType2} | ${formatCurrency(value2)}${sourceRef2} |\n`
+    response += `| ${label1} | ${formatCurrency(value1)}${sourceRef1} |\n`
+    response += `| ${label2} | ${formatCurrency(value2)}${sourceRef2} |\n`
     response += `| Diff | ${arrow} ${formatCurrency(absDiff)} (${sign}${pctChange.toFixed(1)}%) |\n\n`
   }
 
@@ -1686,24 +1826,39 @@ function extractComparisonParts(expandedQuestion: string): { side1: string; side
   // copy the metric from side1
   // Example: "compare committed income oct 2025 vs jan 2026"
   // side2 = "jan 2026" should become "committed income jan 2026"
+  // Example: "compare cashflow subcontractor 10 2025 vs 1 2026"
+  // side2 = "1 2026" should become "cash flow subcontractor 1 2026"
   
-  // Check if side2 looks like just a date (month name + optional year)
+  // Check if side2 looks like just a date (month name or numeric month + optional year)
   const monthPattern = /\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec|january|february|march|april|june|july|august|september|october|november|december)\b/
   const dateOnlyPattern = /^\s*(\d{1,2}\s*)?(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec|january|february|march|april|june|july|august|september|october|november|december)\s*(\d{2,4})?\s*$/i
+  // Also match purely numeric dates: "1 2026", "10 2025", "12 2025"
+  const numericDateOnlyPattern = /^\s*(\d{1,2})\s+(\d{4})\s*$/
   
-  if (dateOnlyPattern.test(side2)) {
+  const side2IsDateOnly = dateOnlyPattern.test(side2) || numericDateOnlyPattern.test(side2)
+  
+  if (side2IsDateOnly) {
     // side2 is just a date - extract the metric from side1
     // Remove the "compare" prefix if present
     let metricPart = side1.replace(/^compare\s+/i, '')
     
-    // Find where the date starts in side1 (month name)
+    // Find where the date starts in side1 (month name OR numeric month+year)
     const monthMatch = metricPart.match(monthPattern)
+    // Also check for numeric month pattern: number followed by space and 4-digit year
+    const numericMonthMatch = metricPart.match(/\b(\d{1,2})\s+(20[2-4]\d)\b/)
+    
     if (monthMatch) {
-      // Get everything before the date
+      // Get everything before the month name date
       const dateIndex = metricPart.toLowerCase().indexOf(monthMatch[1].toLowerCase())
       if (dateIndex > 0) {
         const metricPrefix = metricPart.substring(0, dateIndex).trim()
-        // Construct side2 with the metric prefix
+        side2 = `${metricPrefix} ${side2}`.trim()
+      }
+    } else if (numericMonthMatch) {
+      // Get everything before the numeric date (e.g., "cash flow subcontractor" from "cash flow subcontractor 10 2025")
+      const dateIndex = metricPart.indexOf(numericMonthMatch[0])
+      if (dateIndex > 0) {
+        const metricPrefix = metricPart.substring(0, dateIndex).trim()
         side2 = `${metricPrefix} ${side2}`.trim()
       }
     }
@@ -1788,8 +1943,11 @@ function getItemCodeFromMetric(metricName: string | null): string | null {
   if (!metricName) return null
   const lowerMetric = metricName.toLowerCase()
   
-  // Direct lookup in PARENT_ITEM_MAP
-  for (const [keyword, info] of Object.entries(PARENT_ITEM_MAP)) {
+  // Sort entries by length (longest first) to match more specific terms before substrings
+  // e.g., "less : cost - subcontractor" should match "subcontractor" (2.4) not "cost" (2.2)
+  const sortedEntries = Object.entries(PARENT_ITEM_MAP).sort((a, b) => b[0].length - a[0].length)
+  
+  for (const [keyword, info] of sortedEntries) {
     if (lowerMetric.includes(keyword)) {
       return info.code
     }
@@ -1805,15 +1963,20 @@ function extractComparisonMetric(expandedQuestion: string, dataTypes: string[]):
   // This prevents matching child items (e.g., "Contract Works" instead of "Subcontractor")
   const compareMetricMap: Record<string, string> = {
     'subcontractor': 'subcontractor',
+    'subcontractors': 'subcontractor',
     'subbie': 'subcontractor',
     'subcon': 'subcontractor',
     'preliminaries': 'preliminaries',
     'prelim': 'preliminaries',
+    'total prelim': 'preliminaries',
     'materials': 'materials',
     'material': 'materials',
+    'material cost': 'materials',
     'plant': 'plant and machinery',
     'machinery': 'plant and machinery',
+    'all plant': 'plant and machinery',
     'labour': 'labour',
+    'labor': 'labour',
     'staff': 'supervision',
     'supervision': 'supervision',
     'cost': 'less : cost',
@@ -1826,29 +1989,55 @@ function extractComparisonMetric(expandedQuestion: string, dataTypes: string[]):
     'revenue': 'income',
     'overhead': 'overhead',
     'contract works': 'contract works',
+    'subbie contract works': 'contract works',
+    'subcon contract works': 'contract works',
+    'subcontractors contract works': 'contract works',
     'variation': 'variation',
+    'variations': 'variation',
     'vo': 'variation',
+    'subbie vo': 'variation',
+    'subcon vo': 'variation',
+    'subcontractors vo': 'variation',
+    'subbie variation': 'variation',
+    'subcon variation': 'variation',
+    'subcontractors variation': 'variation',
+    'subbie variations': 'variation',
+    'subcon variations': 'variation',
+    'subcontractors variations': 'variation',
     'claim': 'claim',
     'claims': 'claim',
+    'subbie claim': 'claim',
+    'subcon claim': 'claim',
+    'subcontractors claim': 'claim',
+    'subbie claims': 'claim',
+    'subcon claims': 'claim',
+    'subcontractors claims': 'claim',
   }
 
-  for (const [keyword, targetName] of Object.entries(compareMetricMap)) {
-    if (lowerQ.includes(keyword)) {
-      // Find Data_Type that matches the target name at the right level
-      // Prefer shorter matches (parent level) over longer matches (child level)
-      const matches = dataTypes.filter(dt => {
-        const dtLower = dt.toLowerCase()
-        // Match if Data_Type contains the target as a segment
-        return dtLower.includes(' - ' + targetName + ' -') ||
-               dtLower.includes(' - ' + targetName) ||
-               dtLower === targetName ||
-               dtLower.endsWith(' ' + targetName)
-      })
-      if (matches.length > 0) {
-        // Sort by length - shortest first (parent level)
-        matches.sort((a, b) => a.length - b.length)
-        return matches[0]
-      }
+  // Sort keywords by length (longest first) to match more specific terms before substrings
+  // e.g., "subbie contract works" before "contract works", "subcontractor" before "contract"
+  const sortedEntries = Object.entries(compareMetricMap).sort((a, b) => b[0].length - a[0].length)
+  
+  for (const [keyword, targetName] of sortedEntries) {
+    // Use word boundary matching to prevent substring false positives
+    // e.g., "subcontractor" should NOT match "contract works"
+    const keywordPattern = new RegExp(`\\b${keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i')
+    if (!keywordPattern.test(lowerQ)) continue
+    
+    // Find Data_Type that matches the target name at the right level
+    // Prefer shorter matches (parent level) over longer matches (child level)
+    const matches = dataTypes.filter(dt => {
+      const dtLower = dt.toLowerCase()
+      // Match if Data_Type contains the target as a segment
+      return dtLower.includes(' - ' + targetName + ' -') ||
+             dtLower.includes(' - ' + targetName) ||
+             dtLower === targetName ||
+             dtLower.endsWith(' ' + targetName)
+    })
+    if (matches.length > 0) {
+      // Sort by length - shortest first (parent level)
+      matches.sort((a, b) => a.length - b.length)
+      return matches[0]
     }
   }
 
@@ -1920,35 +2109,6 @@ function handleComparisonQuery(data: FinancialRow[], project: string, question: 
   // Extract the metric (Data_Type) to compare
   const targetDataType = extractComparisonMetric(expandedQuestion, dataTypes)
 
-  // Detect target sheet from query (e.g., "cashflow" → "Cash Flow")
-  const availableSheets = getUniqueValues(data, project, 'Sheet_Name')
-  let targetSheet = 'Financial Status'  // default
-  
-  // Check for sheet keywords in the query
-  const lowerQ = expandedQuestion.toLowerCase()
-  if (lowerQ.includes('cash flow') || lowerQ.includes('cashflow') || lowerQ.includes('cf ')) {
-    // Find matching Cash Flow sheet
-    const cfSheet = availableSheets.find(s => 
-      s.toLowerCase().includes('cash flow') || s.toLowerCase() === 'cashflow'
-    )
-    if (cfSheet) targetSheet = cfSheet
-  } else if (lowerQ.includes('projection') || lowerQ.includes('projected')) {
-    const projSheet = availableSheets.find(s => 
-      s.toLowerCase().includes('projection')
-    )
-    if (projSheet) targetSheet = projSheet
-  } else if (lowerQ.includes('accrual') || lowerQ.includes('accrued')) {
-    const accrualSheet = availableSheets.find(s => 
-      s.toLowerCase().includes('accrual')
-    )
-    if (accrualSheet) targetSheet = accrualSheet
-  } else if (lowerQ.includes('committed')) {
-    const committedSheet = availableSheets.find(s => 
-      s.toLowerCase().includes('committed')
-    )
-    if (committedSheet) targetSheet = committedSheet
-  }
-
   // Parse dates from both sides
   const date1 = parseDate(compParts.side1, defaultMonth)
   const date2 = parseDate(compParts.side2, defaultMonth)
@@ -1956,6 +2116,40 @@ function handleComparisonQuery(data: FinancialRow[], project: string, question: 
   // Determine comparison type: by Financial_Type or by Date
   const compareByDate = finType1 && finType1 === finType2 && (date1.month || date2.month)
   const compareByFinType = finType1 && finType2 && finType1 !== finType2
+
+  // Detect target sheet from query (e.g., "cashflow" → "Cash Flow")
+  // IMPORTANT: For cross-type comparisons (compareByFinType), ALWAYS use Financial Status
+  // because only Financial Status has all Financial Types in one sheet.
+  // Sheet override only applies to same-type date comparisons (compareByDate).
+  const availableSheets = getUniqueValues(data, project, 'Sheet_Name')
+  let targetSheet = 'Financial Status'  // default
+  
+  const lowerQ = expandedQuestion.toLowerCase()
+  if (compareByDate) {
+    // Only override sheet for same-type date comparisons
+    if (lowerQ.includes('cash flow') || lowerQ.includes('cashflow') || lowerQ.includes('cf ')) {
+      const cfSheet = availableSheets.find(s => 
+        s.toLowerCase().includes('cash flow') || s.toLowerCase() === 'cashflow'
+      )
+      if (cfSheet) targetSheet = cfSheet
+    } else if (lowerQ.includes('projection') || lowerQ.includes('projected')) {
+      const projSheet = availableSheets.find(s => 
+        s.toLowerCase().includes('projection')
+      )
+      if (projSheet) targetSheet = projSheet
+    } else if (lowerQ.includes('accrual') || lowerQ.includes('accrued')) {
+      const accrualSheet = availableSheets.find(s => 
+        s.toLowerCase().includes('accrual')
+      )
+      if (accrualSheet) targetSheet = accrualSheet
+    } else if (lowerQ.includes('committed')) {
+      const committedSheet = availableSheets.find(s => 
+        s.toLowerCase().includes('committed')
+      )
+      if (committedSheet) targetSheet = committedSheet
+    }
+  }
+  // For compareByFinType: keep targetSheet = 'Financial Status' (has all types)
 
   if (!compareByDate && !compareByFinType) {
     // Can't determine comparison type - fall back to normal query
@@ -1973,24 +2167,58 @@ function handleComparisonQuery(data: FinancialRow[], project: string, question: 
     // - Cash Flow sheet (monthly data) for historical months
     // - Financial Status sheet (Cash Flow Actual received & paid as at) for current month
     
+    // Get Item_Code for exact matching (avoids matching children)
+    const targetItemCode = getItemCodeFromMetric(targetDataType)
+    
+    // Helper to find the actual sheet name that matches a pattern
+    const findMatchingSheet = (pattern: string): string | null => {
+      const patternLower = pattern.toLowerCase()
+      return availableSheets.find(s => 
+        s.toLowerCase() === patternLower || 
+        s.toLowerCase().includes(patternLower) ||
+        patternLower.includes(s.toLowerCase())
+      ) || null
+    }
+    
+    // Find the actual Cash Flow sheet name
+    const cashFlowSheet = findMatchingSheet('Cash Flow') || findMatchingSheet('Cashflow')
+    
     // Helper to find data for a specific date and metric
     const findValueForDate = (date: { month?: string | null; year?: string | null }): { total: number; rows: FinancialRow[]; label: string } => {
       // Try multiple sources in order of preference
-      const sources = [
-        { sheet: 'Cash Flow', finType: 'Cash Flow' },
-        { sheet: 'Financial Status', finType: 'Cash Flow Actual received & paid as at' },
-        { sheet: 'Financial Status', finType: finType1! },
-        { sheet: targetSheet, finType: finType1! },
-      ]
+      // Use actual sheet names found in the data
+      const sources: Array<{ sheet: string | null; finTypePattern: string; displayFinType: string }> = []
       
-      // Get Item_Code for exact matching (avoids matching children)
-      const targetItemCode = getItemCodeFromMetric(targetDataType)
+      // For cash flow queries, prefer the Cash Flow sheet
+      // Try multiple financial type patterns that might exist in the data
+      if (cashFlowSheet) {
+        sources.push({ sheet: cashFlowSheet, finTypePattern: 'Cash Flow', displayFinType: 'Cash Flow' })
+        sources.push({ sheet: cashFlowSheet, finTypePattern: 'Cash Flow Actual', displayFinType: 'Cash Flow' })
+        sources.push({ sheet: cashFlowSheet, finTypePattern: '', displayFinType: 'Cash Flow' }) // Any financial type
+      }
+      // Fallback to Financial Status with various financial type names
+      sources.push({ sheet: 'Financial Status', finTypePattern: 'Cash Flow Actual received & paid as at', displayFinType: 'Cash Flow' })
+      if (finType1) {
+        sources.push({ sheet: 'Financial Status', finTypePattern: finType1, displayFinType: finType1 })
+      }
+      if (targetSheet && targetSheet !== 'Financial Status') {
+        sources.push({ sheet: targetSheet, finTypePattern: '', displayFinType: finType1 || 'Cash Flow' })
+      }
       
       for (const source of sources) {
+        if (!source.sheet) continue
+        
         let filtered = projectData.filter(d => 
-          d.Sheet_Name === source.sheet && 
-          d.Financial_Type === source.finType
+          d.Sheet_Name === source.sheet
         )
+        
+        // Filter by financial type pattern (empty pattern means accept any)
+        if (source.finTypePattern) {
+          filtered = filtered.filter(d => 
+            d.Financial_Type === source.finTypePattern || 
+            d.Financial_Type.toLowerCase().includes(source.finTypePattern.toLowerCase())
+          )
+        }
         
         // Use EXACT Item_Code match if available, otherwise exact Data_Type match
         if (targetItemCode) {
@@ -2009,15 +2237,16 @@ function handleComparisonQuery(data: FinancialRow[], project: string, question: 
         
         if (filtered.length > 0) {
           const total = filtered.reduce((sum, d) => sum + toNumber(d.Value), 0)
+          // Use the display financial type for the label, not the actual data value
           return { 
             total, 
             rows: filtered, 
-            label: `${source.finType} (${date.month}/${date.year})` 
+            label: `${source.displayFinType} (${date.month}/${date.year})`
           }
         }
       }
       
-      return { total: 0, rows: [], label: `${finType1} (${date.month}/${date.year})` }
+      return { total: 0, rows: [], label: `${finType1 || 'Cash Flow'} (${date.month}/${date.year})` }
     }
 
     const r1 = findValueForDate(date1)
@@ -2092,11 +2321,41 @@ function handleComparisonQuery(data: FinancialRow[], project: string, question: 
   const seenChildCodes = new Set<string>()
   const allRows = [...result1.rows, ...result2.rows]
   
-  // Get unique item codes from the comparison results
-  for (const row of allRows) {
-    if (row.Item_Code && !seenChildCodes.has(row.Item_Code)) {
-      seenChildCodes.add(row.Item_Code)
-      children.push({ code: row.Item_Code, name: row.Data_Type })
+  // Get the parent item code from the results
+  let parentItemCode: string | undefined
+  if (targetDataType) {
+    const targetItemCode = getItemCodeFromMetric(targetDataType)
+    if (targetItemCode) {
+      parentItemCode = targetItemCode
+    } else if (allRows.length > 0) {
+      parentItemCode = allRows[0].Item_Code
+    }
+  } else if (allRows.length > 0) {
+    parentItemCode = allRows[0].Item_Code
+  }
+  
+  if (parentItemCode) {
+    // Find direct children of the parent item in the target sheet
+    const childPrefix = parentItemCode + '.'
+    for (const row of projectData) {
+      if (row.Sheet_Name === targetSheet && 
+          row.Item_Code.startsWith(childPrefix) &&
+          !seenChildCodes.has(row.Item_Code)) {
+        // Only include direct children (one level deeper)
+        const remaining = row.Item_Code.slice(childPrefix.length)
+        if (!remaining.includes('.')) {
+          seenChildCodes.add(row.Item_Code)
+          children.push({ code: row.Item_Code, name: row.Data_Type })
+        }
+      }
+    }
+  } else {
+    // Fallback: get unique item codes from the comparison results
+    for (const row of allRows) {
+      if (row.Item_Code && !seenChildCodes.has(row.Item_Code)) {
+        seenChildCodes.add(row.Item_Code)
+        children.push({ code: row.Item_Code, name: row.Data_Type })
+      }
     }
   }
   
@@ -2111,6 +2370,14 @@ function handleComparisonQuery(data: FinancialRow[], project: string, question: 
     return 0
   })
 
+  // Determine display name and actual Financial_Type from retrieved data
+  // For Cash Flow sheet, data has Financial_Type = "Cash Flow" (short)
+  // but matchFinancialType returns "Cash Flow Actual received & paid as at" (long)
+  const actualFinType1 = result1.rows.length > 0 ? result1.rows[0].Financial_Type : finType1!
+  const displayLabel = compareByDate
+    ? (result1.rows.length > 0 ? result1.rows[0].Sheet_Name : targetSheet)
+    : finType1!
+
   // Save context for Detail drill-down
   compareContextCache.set(project, {
     finType1: compareByDate ? finType1! : finType1!,
@@ -2118,7 +2385,13 @@ function handleComparisonQuery(data: FinancialRow[], project: string, question: 
     targetSheet,
     targetDataType,
     project,
-    children
+    children,
+    isCompareByDate: !!compareByDate,
+    date1: compareByDate ? date1 : undefined,
+    date2: compareByDate ? date2 : undefined,
+    parentItemCode,
+    displayFinType: displayLabel,
+    actualFinType: actualFinType1
   })
   lastCompareDetailPage = 0
 
@@ -3163,31 +3436,47 @@ function answerQuestion(data: FinancialRow[], project: string, question: string,
     return { text: 'No data found for this project.', candidates: [] }
   }
 
-  // Step 0: Check if this is an Analyze or Detail query — highest priority
+  // Step 0: Check if this is an Analyze query — highest priority
   if (isAnalyzeQuery(question)) {
     return handleAnalyzeQuery(data, project)
   }
-  
-  if (isDetailQuery(question)) {
-    const detailResult = handleDetailQuery(data, project, question)
-    if (detailResult) return detailResult
+
+  // Step 0a: Check Detail/More for context-aware handlers FIRST
+  // Priority: Trend context → Compare context → Analyze context
+  // This ensures "detail N" after a Trend drills into Trend sub-items,
+  // not the Analyze handler which would return "No analysis results found"
+  const lowerQ = question.toLowerCase().trim()
+  const isDetailOrMore = lowerQ === 'detail' || lowerQ === 'more' || /^detail\s+\d+(\.\d+)?$/i.test(lowerQ)
+
+  if (isDetailOrMore) {
+    // Try Trend detail first (if Trend context exists)
+    const detailTrendResult = handleDetailTrend(data, project, question)
+    if (detailTrendResult) return detailTrendResult
+
+    // Try Compare detail second (if Compare context exists)
+    const detailCompareResult = handleDetailCompare(data, project, question, defaultMonth)
+    if (detailCompareResult) return detailCompareResult
+
+    // Try Analyze detail last (fallback)
+    if (isDetailQuery(question)) {
+      const detailResult = handleDetailQuery(data, project, question)
+      if (detailResult) return detailResult
+    }
+
+    // No context found for any handler
+    return {
+      text: '❌ No previous query found to drill down into.\n\nPlease run a query first:\n• **Trend:** e.g., "trend cashflow cost"\n• **Compare:** e.g., "compare cashflow subbie 9 2025 vs 12 2025"\n• **Analyze:** e.g., "Analyze"\n\nThen type **detail** to see sub-items.',
+      candidates: []
+    }
   }
 
-  // Step 0a: Check if this is a Total query — handle with dedicated logic
+  // Step 0b: Check if this is a Total query — handle with dedicated logic
   const totalResult = handleTotalQuery(data, project, question, defaultMonth)
   if (totalResult) return totalResult
 
-  // Step 0a: Check if this is a Detail/More command for Trend drill-down
-  const detailTrendResult = handleDetailTrend(data, project, question)
-  if (detailTrendResult) return detailTrendResult
-
-  // Step 0ab: Check if this is a Trend query — handle with dedicated logic
+  // Step 0c: Check if this is a Trend query — handle with dedicated logic
   const trendResult = handleTrendQuery(data, project, question, defaultMonth)
   if (trendResult) return trendResult
-
-  // Step 0b1: Check if this is a Detail Compare command (after Compare query)
-  const detailCompareResult = handleDetailCompare(data, project, question, defaultMonth)
-  if (detailCompareResult) return detailCompareResult
 
   // Step 0b: Check if this is a comparison query — handle it with dedicated logic
   const comparisonResult = handleComparisonQuery(data, project, question, defaultMonth)
