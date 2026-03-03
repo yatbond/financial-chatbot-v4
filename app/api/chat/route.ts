@@ -1710,24 +1710,39 @@ function extractComparisonParts(expandedQuestion: string): { side1: string; side
   // copy the metric from side1
   // Example: "compare committed income oct 2025 vs jan 2026"
   // side2 = "jan 2026" should become "committed income jan 2026"
+  // Example: "compare cashflow subcontractor 10 2025 vs 1 2026"
+  // side2 = "1 2026" should become "cash flow subcontractor 1 2026"
   
-  // Check if side2 looks like just a date (month name + optional year)
+  // Check if side2 looks like just a date (month name or numeric month + optional year)
   const monthPattern = /\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec|january|february|march|april|june|july|august|september|october|november|december)\b/
   const dateOnlyPattern = /^\s*(\d{1,2}\s*)?(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec|january|february|march|april|june|july|august|september|october|november|december)\s*(\d{2,4})?\s*$/i
+  // Also match purely numeric dates: "1 2026", "10 2025", "12 2025"
+  const numericDateOnlyPattern = /^\s*(\d{1,2})\s+(\d{4})\s*$/
   
-  if (dateOnlyPattern.test(side2)) {
+  const side2IsDateOnly = dateOnlyPattern.test(side2) || numericDateOnlyPattern.test(side2)
+  
+  if (side2IsDateOnly) {
     // side2 is just a date - extract the metric from side1
     // Remove the "compare" prefix if present
     let metricPart = side1.replace(/^compare\s+/i, '')
     
-    // Find where the date starts in side1 (month name)
+    // Find where the date starts in side1 (month name OR numeric month+year)
     const monthMatch = metricPart.match(monthPattern)
+    // Also check for numeric month pattern: number followed by space and 4-digit year
+    const numericMonthMatch = metricPart.match(/\b(\d{1,2})\s+(20[2-4]\d)\b/)
+    
     if (monthMatch) {
-      // Get everything before the date
+      // Get everything before the month name date
       const dateIndex = metricPart.toLowerCase().indexOf(monthMatch[1].toLowerCase())
       if (dateIndex > 0) {
         const metricPrefix = metricPart.substring(0, dateIndex).trim()
-        // Construct side2 with the metric prefix
+        side2 = `${metricPrefix} ${side2}`.trim()
+      }
+    } else if (numericMonthMatch) {
+      // Get everything before the numeric date (e.g., "cash flow subcontractor" from "cash flow subcontractor 10 2025")
+      const dateIndex = metricPart.indexOf(numericMonthMatch[0])
+      if (dateIndex > 0) {
+        const metricPrefix = metricPart.substring(0, dateIndex).trim()
         side2 = `${metricPrefix} ${side2}`.trim()
       }
     }
