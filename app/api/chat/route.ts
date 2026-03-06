@@ -498,7 +498,54 @@ async function loadProjectData(filename: string, year: string, month: string): P
 
     // Parse CSV - columns are at fixed positions:
     // 0: Year, 1: Month, 2: Sheet_Name, 3: Financial_Type, 4: Item_Code, 5: Data_Type, 6: Value
-    const lines = (res.data as string).split('\n').filter(line => line.trim())
+    // NOTE: Some Financial_Type values contain literal newlines inside quoted fields
+    // (e.g., "Accrual \n(Before Retention) as at"). We must parse the CSV character-by-character
+    // to handle multi-line quoted fields correctly, NOT split on \n first.
+    const rawCsv = res.data as string
+    
+    // Parse CSV properly: handle multi-line quoted fields
+    const lines: string[][] = []
+    let currentRow: string[] = []
+    let currentField = ''
+    let inQuote = false
+    
+    for (let ci = 0; ci < rawCsv.length; ci++) {
+      const ch = rawCsv[ci]
+      
+      if (ch === '"') {
+        // Toggle quote state (handles escaped quotes "" as well)
+        if (inQuote && ci + 1 < rawCsv.length && rawCsv[ci + 1] === '"') {
+          currentField += '"'  // escaped quote
+          ci++  // skip next quote
+        } else {
+          inQuote = !inQuote
+        }
+      } else if (ch === ',' && !inQuote) {
+        // Field separator - normalize newlines in field values to spaces
+        currentRow.push(currentField.replace(/[\r\n]+/g, ' ').trim())
+        currentField = ''
+      } else if ((ch === '\n' || ch === '\r') && !inQuote) {
+        // End of row (outside quotes)
+        if (ch === '\r' && ci + 1 < rawCsv.length && rawCsv[ci + 1] === '\n') {
+          ci++  // skip \n after \r
+        }
+        currentRow.push(currentField.replace(/[\r\n]+/g, ' ').trim())
+        currentField = ''
+        if (currentRow.some(f => f.length > 0)) {
+          lines.push(currentRow)
+        }
+        currentRow = []
+      } else {
+        currentField += ch
+      }
+    }
+    // Push last row if any
+    if (currentField.length > 0 || currentRow.length > 0) {
+      currentRow.push(currentField.replace(/[\r\n]+/g, ' ').trim())
+      if (currentRow.some(f => f.length > 0)) {
+        lines.push(currentRow)
+      }
+    }
 
     const { name } = extractProjectInfo(filename)
     const code = filename.match(/^(\d+)/)?.[1] || ''
@@ -506,22 +553,7 @@ async function loadProjectData(filename: string, year: string, month: string): P
 
     const data: FinancialRow[] = []
     for (let i = 0; i < lines.length; i++) {
-      // Handle quoted CSV values
-      const values: string[] = []
-      let inQuote = false
-      let current = ''
-      for (let j = 0; j < lines[i].length; j++) {
-        const char = lines[i][j]
-        if (char === '"') {
-          inQuote = !inQuote
-        } else if (char === ',' && !inQuote) {
-          values.push(current.trim().replace(/"/g, ''))
-          current = ''
-        } else {
-          current += char
-        }
-      }
-      values.push(current.trim().replace(/"/g, ''))
+      const values = lines[i]
 
       // Skip header row if present
       const firstValue = values[0]?.toLowerCase()
