@@ -2265,9 +2265,11 @@ function extractComparisonMetric(expandedQuestion: string, dataTypes: string[]):
     // accidentally matching child items (e.g., "Subcontractor - -Contract Works"
     // when we want "Subcontractor" parent). The caller will then use exact
     // Item_Code filtering (d.Item_Code === targetItemCode).
+    // ALSO return the parent name as the metric label so the caller doesn't
+    // need to do a projectData.find() lookup that could return the wrong Data_Type.
     const parentEntry = PARENT_ITEM_MAP[targetName]
     if (parentEntry) {
-      return { metric: null, itemCode: parentEntry.code }
+      return { metric: parentEntry.name, itemCode: parentEntry.code }
     }
     
     // PRIORITY 2: Fall back to Data_Type text matching if no PARENT_ITEM_MAP entry
@@ -2357,9 +2359,17 @@ function handleComparisonQuery(data: FinancialRow[], project: string, question: 
   let targetDataType = metricResult.metric
   let extractedItemCode = metricResult.itemCode
 
-  // If an item code was extracted, look up its Data_Type from the data
+  // If an item code was extracted but no metric name resolved, look up Data_Type from data.
+  // NOTE: When extractComparisonMetric() matched a PARENT_ITEM_MAP entry, it already
+  // returns both metric (parent name) AND itemCode, so this block is skipped — which is
+  // correct because the PARENT_ITEM_MAP name is more reliable than a raw Data_Type lookup
+  // that could return a child item's name (e.g., "Subcontractor - -Contract Works" for 2.4.1
+  // instead of "Subcontractor" for 2.4).
   if (extractedItemCode && !targetDataType) {
-    const itemRow = projectData.find(d => d.Item_Code === extractedItemCode)
+    // Only look up from Financial Status sheet for consistency, and prefer exact match
+    const itemRow = projectData.find(d => 
+      d.Sheet_Name === 'Financial Status' && d.Item_Code === extractedItemCode
+    ) || projectData.find(d => d.Item_Code === extractedItemCode)
     if (itemRow) {
       targetDataType = itemRow.Data_Type
     }
@@ -2589,11 +2599,16 @@ function handleComparisonQuery(data: FinancialRow[], project: string, question: 
   const allRows = [...result1.rows, ...result2.rows]
   
   // Get the parent item code from the results
+  // PRIORITY: Use extractedItemCode (from PARENT_ITEM_MAP) if available,
+  // then fall back to getItemCodeFromMetric, then to the first result row.
   let parentItemCode: string | undefined
-  if (targetDataType) {
-    const targetItemCode = getItemCodeFromMetric(targetDataType)
-    if (targetItemCode) {
-      parentItemCode = targetItemCode
+  if (extractedItemCode) {
+    // Use the PARENT_ITEM_MAP code directly — most reliable
+    parentItemCode = extractedItemCode
+  } else if (targetDataType) {
+    const derivedItemCode = getItemCodeFromMetric(targetDataType)
+    if (derivedItemCode) {
+      parentItemCode = derivedItemCode
     } else if (allRows.length > 0) {
       parentItemCode = allRows[0].Item_Code
     }
