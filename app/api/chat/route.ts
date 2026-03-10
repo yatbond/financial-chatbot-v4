@@ -267,6 +267,18 @@ interface CompareContext {
 const compareContextCache: Map<string, CompareContext> = new Map()
 let lastCompareDetailPage: number = 0  // Track pagination for "more" command
 
+// Global cache for last regular query context (per project)
+// This allows "detail" command to work after regular queries
+interface QueryContext {
+  itemCode: string | null
+  itemName: string | null
+  finType: string | null
+  sheet: string | null
+  month: string | null
+  year: string | null
+}
+const queryContextCache: Map<string, QueryContext> = new Map()
+
 // Primary keywords for Financial Type matching (10x weight)
 // These are the KEY differentiators between Financial Types
 // Maps canonical Financial_Type names to their user-facing keyword variants
@@ -3637,6 +3649,85 @@ function handleAnalyzeQuery(data: FinancialRow[], project: string, debugMode: bo
   return { text: response, candidates: [] }
 }
 
+// Handle "detail" command after a regular query
+// Shows child items of the last matched item
+function handleQueryDetail(data: FinancialRow[], project: string, context: QueryContext, debugMode: boolean = false): FuzzyResult | null {
+  if (!context.itemCode) return null
+  
+  const projectData = data.filter(d => d._project === project)
+  
+  // Find all child items (items with Item_Code starting with parent code + .)
+  const childPrefix = context.itemCode + '.'
+  const childRows = projectData.filter(d => 
+    d.Item_Code.startsWith(childPrefix) &&
+    (!context.finType || d.Financial_Type === context.finType) &&
+    (!context.sheet || d.Sheet_Name === context.sheet) &&
+    (!context.month || d.Month === context.month) &&
+    (!context.year || d.Year === context.year)
+  )
+  
+  if (childRows.length === 0) {
+    return {
+      text: `❌ No child items found for **${context.itemName || context.itemCode}**.\n\nThis is a leaf-level item with no sub-items.`,
+      candidates: []
+    }
+  }
+  
+  // Group by Item_Code and sum values
+  const childGroups = new Map<string, { rows: FinancialRow[]; total: number }>()
+  childRows.forEach(row => {
+    // Get the immediate child (one level down)
+    const remaining = row.Item_Code.slice(childPrefix.length)
+    const immediateChild = remaining.split('.')[0]
+    const childCode = childPrefix + immediateChild
+    
+    if (!childGroups.has(childCode)) {
+      childGroups.set(childCode, { rows: [], total: 0 })
+    }
+    const group = childGroups.get(childCode)!
+    group.rows.push(row)
+    group.total += toNumber(row.Value)
+  })
+  
+  // Sort by Item_Code
+  const sortedChildren = Array.from(childGroups.entries()).sort((a, b) => {
+    const aParts = a[0].split('.').map(Number)
+    const bParts = b[0].split('.').map(Number)
+    for (let i = 0; i < Math.max(aParts.length, bParts.length); i++) {
+      const diff = (aParts[i] || 0) - (bParts[i] || 0)
+      if (diff !== 0) return diff
+    }
+    return 0
+  })
+  
+  // Build response
+  let response = `## Detail: ${context.itemName || context.itemCode}\n\n`
+  response += `**Parent:** ${context.itemCode} - ${context.itemName || 'Item'}\n`
+  if (context.finType) response += `**Financial Type:** ${context.finType}\n`
+  if (context.sheet) response += `**Sheet:** ${context.sheet}\n`
+  response += `\n| Item Code | Name | Value ('000) |\n`
+  response += `|-----------|------|-------------|\n`
+  
+  let grandTotal = 0
+  for (const [childCode, group] of sortedChildren) {
+    const childName = group.rows[0]?.Data_Type || 'Unknown'
+    const ref = group.rows.length > 0 ? ` ${formatSourceRef(group.rows[0], debugMode)}` : ''
+    response += `| ${childCode} | ${childName} | ${formatCurrency(group.total)}${ref} |\n`
+    grandTotal += group.total
+  }
+  
+  response += `| **Total** | | **${formatCurrency(grandTotal)}** |\n`
+  response += `\n💡 Type **detail N** (e.g., detail 1) to drill down further into a specific child.`
+  
+  // Store context for further drill-down
+  queryContextCache.set(project, {
+    ...context,
+    itemCode: sortedChildren[0]?.[0] || context.itemCode  // Store first child for next detail
+  })
+  
+  return { text: response, candidates: [] }
+}
+
 // Handle "Detail X" or "Detail X.Y" query
 function handleDetailQuery(data: FinancialRow[], project: string, question: string, debugMode: boolean = false): FuzzyResult | null {
   const parsed = parseDetailQuery(question)
@@ -3815,6 +3906,13 @@ function answerQuestion(data: FinancialRow[], project: string, question: string,
     const detailCompareResult = handleDetailCompare(data, project, question, defaultMonth, isDebug)
     if (detailCompareResult) return detailCompareResult
 
+    // Try regular query detail (if query context exists)
+    const queryContext = queryContextCache.get(project)
+    if (queryContext && queryContext.itemCode) {
+      const detailResult = handleQueryDetail(data, project, queryContext, isDebug)
+      if (detailResult) return detailResult
+    }
+
     // Try Analyze detail last (fallback)
     if (isDetailQuery(question)) {
       const detailResult = handleDetailQuery(data, project, question, isDebug)
@@ -3823,7 +3921,7 @@ function answerQuestion(data: FinancialRow[], project: string, question: string,
 
     // No context found for any handler
     return {
-      text: '❌ No previous query found to drill down into.\n\nPlease run a query first:\n• **Trend:** e.g., "trend cashflow cost"\n• **Compare:** e.g., "compare cashflow subbie 9 2025 vs 12 2025"\n• **Analyze:** e.g., "Analyze"\n\nThen type **detail** to see sub-items.',
+      text: '❌ No previous query found to drill down into.\n\nPlease run a query first:\n• **Trend:** e.g., "trend cashflow cost"\n• **Compare:** e.g., "compare cashflow subbie 9 2025 vs 12 2025"\n• **Analyze:** e.g., "Analyze"\n• **Regular query:** e.g., "projected prelim"\n\nThen type **detail** to see sub-items.',
       candidates: []
     }
   }
