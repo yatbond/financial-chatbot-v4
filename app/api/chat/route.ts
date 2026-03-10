@@ -300,9 +300,24 @@ function toNumber(val: number | string): number {
 }
 
 // Format a source reference for data traceability
-// Output: [Sheet_Name, Financial_Type, Data_Type, Item_Code, Month, Year]
-function formatSourceRef(row: FinancialRow): string {
-  return `[${row.Sheet_Name}, ${row.Financial_Type}, ${row.Data_Type}, ${row.Item_Code}, ${row.Month}, ${row.Year}]`
+// Debug mode: [Sheet_Name, Financial_Type, Data_Type, Item_Code, Month, Year]
+// Normal mode: Row N (CSV row number)
+function formatSourceRef(row: FinancialRow, debugMode: boolean = false): string {
+  if (debugMode) {
+    return `[${row.Sheet_Name}, ${row.Financial_Type}, ${row.Data_Type}, ${row.Item_Code}, ${row.Month}, ${row.Year}]`
+  }
+  // Normal mode: show CSV row number
+  return `Row ${row._rowNumber || '??'}`
+}
+
+// Check if query ends with * (debug mode indicator)
+function isDebugQuery(question: string): boolean {
+  return question.trim().endsWith('*')
+}
+
+// Strip the * from query for processing
+function stripDebugFlag(question: string): string {
+  return question.trim().replace(/\*$/, '').trim()
 }
 
 interface FinancialRow {
@@ -314,6 +329,7 @@ interface FinancialRow {
   Item_Code: string
   Value: number | string
   _project?: string
+  _rowNumber?: number  // CSV row number for traceability
 }
 
 interface ProjectInfo {
@@ -552,12 +568,16 @@ async function loadProjectData(filename: string, year: string, month: string): P
     const projectLabel = `${code} - ${name}`
 
     const data: FinancialRow[] = []
+    let csvRowNumber = 1  // Track CSV row number (1-indexed, header is row 1)
     for (let i = 0; i < lines.length; i++) {
       const values = lines[i]
 
       // Skip header row if present
       const firstValue = values[0]?.toLowerCase()
-      if (i === 0 && (firstValue === 'year' || firstValue === 'sheet_name')) continue
+      if (i === 0 && (firstValue === 'year' || firstValue === 'sheet_name')) {
+        csvRowNumber++  // Header is row 1, data starts at row 2
+        continue
+      }
 
       // Parse each column - columns are at fixed positions:
       // 0: Year, 1: Month, 2: Sheet_Name, 3: Financial_Type, 4: Item_Code, 5: Data_Type, 6: Value
@@ -592,9 +612,11 @@ async function loadProjectData(filename: string, year: string, month: string): P
         Data_Type: dataType || '',
         Item_Code: itemCode,
         Value: value,
-        _project: projectLabel
+        _project: projectLabel,
+        _rowNumber: csvRowNumber
       }
       data.push(row)
+      csvRowNumber++
     }
     return data
   } catch (error) {
@@ -1177,7 +1199,7 @@ function getMonthRange(reportYear: number, reportMonth: number, count: number): 
 }
 
 // Handle a Trend query
-function handleTrendQuery(data: FinancialRow[], project: string, question: string, defaultMonth: string): FuzzyResult | null {
+function handleTrendQuery(data: FinancialRow[], project: string, question: string, defaultMonth: string, debugMode: boolean = false): FuzzyResult | null {
   if (!isTrendQuery(question)) return null
 
   const parsed = parseTrendQuery(question)
@@ -1414,7 +1436,7 @@ function handleTrendQuery(data: FinancialRow[], project: string, question: strin
     const monthLabel = `${monthNames[point.month]} ${point.year}`
     if (point.hasData) {
       const sourceRef = point.rows.length === 1 
-        ? ` ${formatSourceRef(point.rows[0])}` 
+        ? ` ${formatSourceRef(point.rows[0], debugMode)}` 
         : point.rows.length > 1 
           ? ` [${point.rows[0].Sheet_Name}, ${point.rows[0].Financial_Type}, ${point.rows[0].Data_Type}, ${point.rows[0].Item_Code}, ${point.month}, ${point.year}]`
           : ''
@@ -1483,7 +1505,8 @@ function handleTrendQuery(data: FinancialRow[], project: string, question: strin
 function handleDetailTrend(
   data: FinancialRow[], 
   project: string, 
-  question: string
+  question: string,
+  debugMode: boolean = false
 ): FuzzyResult | null {
   const lowerQ = question.toLowerCase().trim()
   
@@ -1605,7 +1628,7 @@ function handleDetailTrend(
       const monthLabel = `${monthNames[month]} ${year}`
       if (monthRows.length > 0) {
         const value = toNumber(monthRows[0].Value)
-        const sourceRef = ` ${formatSourceRef(monthRows[0])}`
+        const sourceRef = ` ${formatSourceRef(monthRows[0], debugMode)}`
         response += `| ${monthLabel} | ${formatCurrency(value)}${sourceRef} |\n`
       } else {
         response += `| ${monthLabel} | — |\n`
@@ -1633,7 +1656,8 @@ function handleDetailCompare(
   data: FinancialRow[], 
   project: string, 
   question: string,
-  defaultMonth: string
+  defaultMonth: string,
+  debugMode: boolean = false
 ): FuzzyResult | null {
   const lowerQ = question.toLowerCase().trim()
   
@@ -1815,8 +1839,8 @@ function handleDetailCompare(
     response += `| Type | Value ('000) |\n`
     response += `|------|-------------|\n`
     
-    const sourceRef1 = filtered1.length > 0 ? ` ${formatSourceRef(filtered1[0])}` : ''
-    const sourceRef2 = filtered2.length > 0 ? ` ${formatSourceRef(filtered2[0])}` : ''
+    const sourceRef1 = filtered1.length > 0 ? ` ${formatSourceRef(filtered1[0], debugMode)}` : ''
+    const sourceRef2 = filtered2.length > 0 ? ` ${formatSourceRef(filtered2[0], debugMode)}` : ''
     
     response += `| ${label1} | ${formatCurrency(value1)}${sourceRef1} |\n`
     response += `| ${label2} | ${formatCurrency(value2)}${sourceRef2} |\n`
@@ -2365,7 +2389,7 @@ function extractComparisonMetric(expandedQuestion: string, dataTypes: string[]):
 }
 
 // Handle comparison query - returns formatted comparison result or null if not a comparison
-function handleComparisonQuery(data: FinancialRow[], project: string, question: string, defaultMonth: string): FuzzyResult | null {
+function handleComparisonQuery(data: FinancialRow[], project: string, question: string, defaultMonth: string, debugMode: boolean = false): FuzzyResult | null {
   const expandedQuestion = expandAcronyms(question).toLowerCase()
 
   // Check if this is a comparison query
@@ -2610,10 +2634,10 @@ function handleComparisonQuery(data: FinancialRow[], project: string, question: 
 
   // Build source refs for each side
   const sourceRef1 = result1.rows.length > 0 
-    ? ` ${formatSourceRef(result1.rows[0])}` 
+    ? ` ${formatSourceRef(result1.rows[0], debugMode)}` 
     : ''
   const sourceRef2 = result2.rows.length > 0 
-    ? ` ${formatSourceRef(result2.rows[0])}` 
+    ? ` ${formatSourceRef(result2.rows[0], debugMode)}` 
     : ''
 
   // Table header
@@ -2917,7 +2941,7 @@ function parseTotalQuery(question: string): {
 }
 
 // Handle a Total query - sum all sub-items under a parent item for a given financial type
-function handleTotalQuery(data: FinancialRow[], project: string, question: string, defaultMonth: string): FuzzyResult | null {
+function handleTotalQuery(data: FinancialRow[], project: string, question: string, defaultMonth: string, debugMode: boolean = false): FuzzyResult | null {
   if (!isTotalQuery(question)) return null
 
   const parsed = parseTotalQuery(question)
@@ -3104,7 +3128,7 @@ function handleTotalQuery(data: FinancialRow[], project: string, question: strin
 
   for (const [itemCode, group] of sortedSubItems) {
     const description = group.dataType || '-'
-    const sourceRef = group.rows.length > 0 ? ` ${formatSourceRef(group.rows[0])}` : ''
+    const sourceRef = group.rows.length > 0 ? ` ${formatSourceRef(group.rows[0], debugMode)}` : ''
     response += `| ${itemCode} | ${description} | ${formatCurrency(group.total)}${sourceRef} |\n`
   }
 
@@ -3359,7 +3383,8 @@ function runComparison(
   finType2: string, 
   operator: 'lt' | 'gt',
   label1: string,
-  label2: string
+  label2: string,
+  debugMode: boolean = false
 ): AnalysisItem[] {
   const results: AnalysisItem[] = []
   let subIndex = 0
@@ -3380,8 +3405,8 @@ function runComparison(
       const diff = Math.abs(val1 - val2)
       const pct = val2 !== 0 ? (diff / Math.abs(val2)) * 100 : 0
       
-      const sourceRef1 = rows1.length > 0 ? formatSourceRef(rows1[0]) : ''
-      const sourceRef2 = rows2.length > 0 ? formatSourceRef(rows2[0]) : ''
+      const sourceRef1 = rows1.length > 0 ? formatSourceRef(rows1[0], debugMode) : ''
+      const sourceRef2 = rows2.length > 0 ? formatSourceRef(rows2[0], debugMode) : ''
       
       results.push({
         subIndex,
@@ -3403,7 +3428,7 @@ function runComparison(
 }
 
 // Handle "Analyze" query
-function handleAnalyzeQuery(data: FinancialRow[], project: string): FuzzyResult {
+function handleAnalyzeQuery(data: FinancialRow[], project: string, debugMode: boolean = false): FuzzyResult {
   const projectData = data.filter(d => d._project === project && d.Sheet_Name === 'Financial Status')
   
   if (projectData.length === 0) {
@@ -3434,7 +3459,7 @@ function handleAnalyzeQuery(data: FinancialRow[], project: string): FuzzyResult 
   // Comparison 1: Projection vs Business Plan - Income Shortfalls (Projected < Business Plan)
   if (projectionType && businessPlanType) {
     compIndex++
-    const items = runComparison(data, project, incomeItems, projectionType, businessPlanType, 'lt', 'Projected', 'Business Plan')
+    const items = runComparison(data, project, incomeItems, projectionType, businessPlanType, 'lt', 'Projected', 'Business Plan', debugMode)
     comparisons.push({
       comparisonIndex: compIndex,
       title: 'Projection vs Business Plan - Income Shortfalls',
@@ -3449,7 +3474,7 @@ function handleAnalyzeQuery(data: FinancialRow[], project: string): FuzzyResult 
   // Comparison 2: Projection vs Audit Report (WIP) - Income Shortfalls (Projected < WIP)
   if (projectionType && wipType) {
     compIndex++
-    const items = runComparison(data, project, incomeItems, projectionType, wipType, 'lt', 'Projected', 'WIP')
+    const items = runComparison(data, project, incomeItems, projectionType, wipType, 'lt', 'Projected', 'WIP', debugMode)
     comparisons.push({
       comparisonIndex: compIndex,
       title: 'Projection vs Audit Report (WIP) - Income Shortfalls',
@@ -3466,7 +3491,7 @@ function handleAnalyzeQuery(data: FinancialRow[], project: string): FuzzyResult 
   // Comparison 3: Projection vs Business Plan - Cost Overruns (Projected > Business Plan)
   if (projectionType && businessPlanType) {
     compIndex++
-    const items = runComparison(data, project, costItems, projectionType, businessPlanType, 'gt', 'Projected', 'Business Plan')
+    const items = runComparison(data, project, costItems, projectionType, businessPlanType, 'gt', 'Projected', 'Business Plan', debugMode)
     comparisons.push({
       comparisonIndex: compIndex,
       title: 'Projection vs Business Plan - Cost Overruns',
@@ -3481,7 +3506,7 @@ function handleAnalyzeQuery(data: FinancialRow[], project: string): FuzzyResult 
   // Comparison 4: Projection vs Audit Report (WIP) - Cost Overruns (Projected > WIP)
   if (projectionType && wipType) {
     compIndex++
-    const items = runComparison(data, project, costItems, projectionType, wipType, 'gt', 'Projected', 'WIP')
+    const items = runComparison(data, project, costItems, projectionType, wipType, 'gt', 'Projected', 'WIP', debugMode)
     comparisons.push({
       comparisonIndex: compIndex,
       title: 'Projection vs Audit Report (WIP) - Cost Overruns',
@@ -3496,7 +3521,7 @@ function handleAnalyzeQuery(data: FinancialRow[], project: string): FuzzyResult 
   // Comparison 5: Committed vs Projection - Committed Exceeds Projection
   if (committedType && projectionType) {
     compIndex++
-    const items = runComparison(data, project, costItems, committedType, projectionType, 'gt', 'Committed', 'Projected')
+    const items = runComparison(data, project, costItems, committedType, projectionType, 'gt', 'Committed', 'Projected', debugMode)
     comparisons.push({
       comparisonIndex: compIndex,
       title: 'Committed vs Projection - Committed Exceeds Projection',
@@ -3511,7 +3536,7 @@ function handleAnalyzeQuery(data: FinancialRow[], project: string): FuzzyResult 
   // Comparison 6: Projection vs Budget Revision - Exceeds Budget Revision
   if (budgetRevisionType && projectionType) {
     compIndex++
-    const items = runComparison(data, project, costItems, projectionType, budgetRevisionType, 'gt', 'Projected', 'Budget Revision')
+    const items = runComparison(data, project, costItems, projectionType, budgetRevisionType, 'gt', 'Projected', 'Budget Revision', debugMode)
     comparisons.push({
       comparisonIndex: compIndex,
       title: 'Projection vs Budget Revision - Exceeds Budget Revision',
@@ -3534,16 +3559,18 @@ function handleAnalyzeQuery(data: FinancialRow[], project: string): FuzzyResult 
   // Build formatted output
   let response = `## Financial Analysis\n\n`
   
-  // Show which Financial Types were detected
-  response += `**Data Source:** Financial Status (cumulative)\n`
-  response += `**Financial Types Detected:**\n`
-  if (projectionType) response += `• Projection: "${projectionType}"\n`
-  if (businessPlanType) response += `• Business Plan: "${businessPlanType}"\n`
-  if (wipType) response += `• Audit Report (WIP): "${wipType}"\n`
-  if (committedType) response += `• Committed: "${committedType}"\n`
-  if (budgetRevisionType) response += `• Budget Revision: "${budgetRevisionType}"\n`
+  // Show which Financial Types were detected (only in debug mode)
+  if (debugMode) {
+    response += `**Data Source:** Financial Status (cumulative)\n`
+    response += `**Financial Types Detected:**\n`
+    if (projectionType) response += `• Projection: "${projectionType}"\n`
+    if (businessPlanType) response += `• Business Plan: "${businessPlanType}"\n`
+    if (wipType) response += `• Audit Report (WIP): "${wipType}"\n`
+    if (committedType) response += `• Committed: "${committedType}"\n`
+    if (budgetRevisionType) response += `• Budget Revision: "${budgetRevisionType}"\n`
+  }
   
-  // Show warnings for missing types
+  // Show warnings for missing types (always show)
   const missingTypes: string[] = []
   if (!projectionType) missingTypes.push('Projection')
   if (!businessPlanType) missingTypes.push('Business Plan')
@@ -3556,7 +3583,7 @@ function handleAnalyzeQuery(data: FinancialRow[], project: string): FuzzyResult 
     response += `Available types: ${availableTypes.join(', ')}\n`
   }
   
-  response += `\n`
+  if (debugMode) response += `\n`
   
   // Income section
   const incomeComparisons = comparisons.filter(c => c.category === 'income')
@@ -3611,7 +3638,7 @@ function handleAnalyzeQuery(data: FinancialRow[], project: string): FuzzyResult 
 }
 
 // Handle "Detail X" or "Detail X.Y" query
-function handleDetailQuery(data: FinancialRow[], project: string, question: string): FuzzyResult | null {
+function handleDetailQuery(data: FinancialRow[], project: string, question: string, debugMode: boolean = false): FuzzyResult | null {
   const parsed = parseDetailQuery(question)
   if (!parsed) return null
   
@@ -3676,8 +3703,8 @@ function handleDetailQuery(data: FinancialRow[], project: string, question: stri
       const sign = comparison.operator === 'lt' ? '-' : '+'
       totalDiff += diff
       
-      const ref1 = rows1.length > 0 ? ` ${formatSourceRef(rows1[0])}` : ''
-      const ref2 = rows2.length > 0 ? ` ${formatSourceRef(rows2[0])}` : ''
+      const ref1 = rows1.length > 0 ? ` ${formatSourceRef(rows1[0], debugMode)}` : ''
+      const ref2 = rows2.length > 0 ? ` ${formatSourceRef(rows2[0], debugMode)}` : ''
       response += `| ${tier3.itemCode} ${tier3.itemName} | ${formatCurrency(val1)}${ref1} | ${formatCurrency(val2)}${ref2} | ${arrow}${formatCurrency(diff)} (${sign}${pct.toFixed(1)}%) |\n`
     }
     
@@ -3724,8 +3751,8 @@ function handleDetailQuery(data: FinancialRow[], project: string, question: stri
         const sign = comparison.operator === 'lt' ? '-' : '+'
         const symbol = comparison.operator === 'lt' ? '<' : '>'
         
-        const ref1 = rows1.length > 0 ? ` ${formatSourceRef(rows1[0])}` : ''
-        const ref2 = rows2.length > 0 ? ` ${formatSourceRef(rows2[0])}` : ''
+        const ref1 = rows1.length > 0 ? ` ${formatSourceRef(rows1[0], debugMode)}` : ''
+        const ref2 = rows2.length > 0 ? ` ${formatSourceRef(rows2[0], debugMode)}` : ''
         response += `   - ${tier3.itemCode} ${tier3.itemName}: ${analysisItem.label1} ${formatCurrency(val1)}${ref1} ${symbol} ${analysisItem.label2} ${formatCurrency(val2)}${ref2} (${arrow}${formatCurrency(diff)}, ${sign}${pct.toFixed(1)}%)\n`
       }
       
@@ -3743,8 +3770,13 @@ function handleDetailQuery(data: FinancialRow[], project: string, question: stri
 }
 
 // Main query handler with new logic
-function answerQuestion(data: FinancialRow[], project: string, question: string, defaultMonth: string): FuzzyResult {
-  const expandedQuestion = expandAcronyms(question).toLowerCase()
+function answerQuestion(data: FinancialRow[], project: string, question: string, defaultMonth: string, debugMode?: boolean): FuzzyResult {
+  // Detect debug mode from query (ends with *)
+  const isDebug = debugMode ?? isDebugQuery(question)
+  // Strip * from query for processing
+  const processedQuestion = isDebug ? stripDebugFlag(question) : question
+  
+  const expandedQuestion = expandAcronyms(processedQuestion).toLowerCase()
   // Get significant words from the question (after acronym expansion)
   // IMPORTANT: Keep ALL words including short ones like "np" which may be acronyms
   const questionWords = expandedQuestion.split(/\s+/).filter(w => w.length > 0)
@@ -3764,7 +3796,7 @@ function answerQuestion(data: FinancialRow[], project: string, question: string,
 
   // Step 0b: Check if this is an Analyze query
   if (isAnalyzeQuery(question)) {
-    return handleAnalyzeQuery(data, project)
+    return handleAnalyzeQuery(data, project, isDebug)
   }
 
   // Step 0a: Check Detail/More for context-aware handlers FIRST
@@ -3776,16 +3808,16 @@ function answerQuestion(data: FinancialRow[], project: string, question: string,
 
   if (isDetailOrMore) {
     // Try Trend detail first (if Trend context exists)
-    const detailTrendResult = handleDetailTrend(data, project, question)
+    const detailTrendResult = handleDetailTrend(data, project, question, isDebug)
     if (detailTrendResult) return detailTrendResult
 
     // Try Compare detail second (if Compare context exists)
-    const detailCompareResult = handleDetailCompare(data, project, question, defaultMonth)
+    const detailCompareResult = handleDetailCompare(data, project, question, defaultMonth, isDebug)
     if (detailCompareResult) return detailCompareResult
 
     // Try Analyze detail last (fallback)
     if (isDetailQuery(question)) {
-      const detailResult = handleDetailQuery(data, project, question)
+      const detailResult = handleDetailQuery(data, project, question, isDebug)
       if (detailResult) return detailResult
     }
 
@@ -3797,15 +3829,15 @@ function answerQuestion(data: FinancialRow[], project: string, question: string,
   }
 
   // Step 0b: Check if this is a Total query — handle with dedicated logic
-  const totalResult = handleTotalQuery(data, project, question, defaultMonth)
+  const totalResult = handleTotalQuery(data, project, question, defaultMonth, isDebug)
   if (totalResult) return totalResult
 
   // Step 0c: Check if this is a Trend query — handle with dedicated logic
-  const trendResult = handleTrendQuery(data, project, question, defaultMonth)
+  const trendResult = handleTrendQuery(data, project, question, defaultMonth, isDebug)
   if (trendResult) return trendResult
 
   // Step 0b: Check if this is a comparison query — handle it with dedicated logic
-  const comparisonResult = handleComparisonQuery(data, project, question, defaultMonth)
+  const comparisonResult = handleComparisonQuery(data, project, question, defaultMonth, isDebug)
   if (comparisonResult) return comparisonResult
 
   // Step 1: Parse date → month, year
@@ -4174,24 +4206,29 @@ function answerQuestion(data: FinancialRow[], project: string, question: string,
     itemGroups.get(key)!.push(d)
   })
 
-  let response = `## Query Results\n\n`
-  response += `**Filters:**\n`
-  // Show which sheet was used
-  if (appliedSheet) response += `• Sheet: ${appliedSheet}\n`
-  // Show Financial Type filter
-  if (targetFinType) response += `• Financial Type: ${targetFinType}\n`
-  // Show month - only show actual month if user specified it
-  response += `• Month: ${hasUserDate && parsedDate.month ? parsedDate.month : 'All'}\n`
-  // Show year - only show actual year if user specified it
-  response += `• Year: ${hasUserDate && parsedDate.year ? parsedDate.year : 'All'}\n`
-  response += `• Data Type: ${targetDataType || 'All'}\n`
-  response += `• Item Code: ${targetItemCode || 'All'}\n\n`
+  let response = `## Query Results\n`
+  
+  // Filters: Show minimal info in normal mode, detailed in debug mode
+  if (isDebug) {
+    response += `**Filters:**\n`
+    if (appliedSheet) response += `• Sheet: ${appliedSheet}\n`
+    if (targetFinType) response += `• Financial Type: ${targetFinType}\n`
+    response += `• Month: ${hasUserDate && parsedDate.month ? parsedDate.month : 'All'}\n`
+    response += `• Year: ${hasUserDate && parsedDate.year ? parsedDate.year : 'All'}\n`
+    response += `• Data Type: ${targetDataType || 'All'}\n`
+    response += `• Item Code: ${targetItemCode || 'All'}\n`
+  } else {
+    // Minimal format: just show the Data Type
+    response += `**Filters:**\n`
+    response += `${targetDataType || 'All'}\n`
+  }
+  response += `\n`
 
   // Build source ref for the total
   const totalSourceRef = filtered.length === 1 
-    ? ` ${formatSourceRef(filtered[0])}` 
+    ? ` ${formatSourceRef(filtered[0], isDebug)}` 
     : filtered.length > 1 
-      ? ` [sum of ${filtered.length} rows]`
+      ? (isDebug ? ` [sum of ${filtered.length} rows]` : ' Row ##')
       : ''
   response += `**Total: ${formatCurrency(total)}${totalSourceRef}** ('000)\n\n`
 
@@ -4201,9 +4238,9 @@ function answerQuestion(data: FinancialRow[], project: string, question: string,
     itemGroups.forEach((rows, itemCode) => {
       const itemTotal = rows.reduce((sum, d) => sum + toNumber(d.Value), 0)
     const itemSourceRef = rows.length === 1 
-      ? ` ${formatSourceRef(rows[0])}` 
+      ? ` ${formatSourceRef(rows[0], isDebug)}` 
       : rows.length > 1 
-        ? ` ${formatSourceRef(rows[0])}`
+        ? ` ${formatSourceRef(rows[0], isDebug)}`
         : ''
     response += `• Item ${itemCode}: ${formatCurrency(itemTotal)}${itemSourceRef}\n`
   })
@@ -4309,7 +4346,11 @@ function answerQuestion(data: FinancialRow[], project: string, question: string,
     response += `\n**Available Records (click to select):**\n`
     candidates.forEach((c) => {
       const matches = c.matchedKeywords.length > 0 ? ` [Matched: ${c.matchedKeywords.join(', ')}]` : ''
-      response += `[${c.id}] ${c.month}/${c.year}/${c.sheet}/${c.financialType}/${c.dataType}/${c.itemCode}: ${formatCurrency(toNumber(c.value))} [Score: ${c.score}]${matches}\n`
+      if (isDebug) {
+        response += `[${c.id}] ${c.month}/${c.year}/${c.sheet}/${c.financialType}/${c.dataType}/${c.itemCode}: ${formatCurrency(toNumber(c.value))} [Score: ${c.score}]${matches}\n`
+      } else {
+        response += `[${c.id}] ${c.month}/${c.year}/${c.sheet}/${c.financialType}/${c.dataType}/${c.itemCode}: ${formatCurrency(toNumber(c.value))} [Score: ${c.score}]${matches} Row ##\n`
+      }
     })
   }
 
