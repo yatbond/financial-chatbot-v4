@@ -4335,6 +4335,7 @@ function answerQuestion(data: FinancialRow[], project: string, question: string,
       itemCode: d.Item_Code,
       month: d.Month,
       year: d.Year,
+      rowNumber: d._rowNumber,  // Include CSV row number
       matchedKeywords: Array.from(new Set(matchedKeywords)) // Remove duplicates
     }
   }).sort((a, b) => b.score - a.score).slice(0, 10)
@@ -4349,7 +4350,7 @@ function answerQuestion(data: FinancialRow[], project: string, question: string,
       if (isDebug) {
         response += `[${c.id}] ${c.month}/${c.year}/${c.sheet}/${c.financialType}/${c.dataType}/${c.itemCode}: ${formatCurrency(toNumber(c.value))} [Score: ${c.score}]${matches}\n`
       } else {
-        response += `[${c.id}] ${c.month}/${c.year}/${c.sheet}/${c.financialType}/${c.dataType}/${c.itemCode}: ${formatCurrency(toNumber(c.value))} [Score: ${c.score}]${matches} Row ##\n`
+        response += `[${c.id}] ${c.month}/${c.year}/${c.sheet}/${c.financialType}/${c.dataType}/${c.itemCode}: ${formatCurrency(toNumber(c.value))} [Score: ${c.score}]${matches} Row ${c.rowNumber || '??'}\n`
       }
     })
   }
