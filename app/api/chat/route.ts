@@ -4224,18 +4224,11 @@ function answerQuestion(data: FinancialRow[], project: string, question: string,
   }
   response += `\n`
 
-  // Build source ref for the total
+  // Build source ref for the total - show row number of the first/best result
   let totalSourceRef = ''
-  if (filtered.length === 1) {
-    totalSourceRef = ` ${formatSourceRef(filtered[0], isDebug)}`
-  } else if (filtered.length > 1) {
-    if (isDebug) {
-      totalSourceRef = ` [sum of ${filtered.length} rows]`
-    } else {
-      // Show row numbers of all filtered rows
-      const rowNumbers = filtered.map(r => r._rowNumber || '??').join(', ')
-      totalSourceRef = ` Row ${rowNumbers}`
-    }
+  if (filtered.length >= 1) {
+    // Always show the row number of the first (best) result
+    totalSourceRef = ` Row ${filtered[0]._rowNumber || '??'}`
   }
   response += `**Total: ${formatCurrency(total)}${totalSourceRef}** ('000)\n\n`
 
