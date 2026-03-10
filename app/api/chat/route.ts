@@ -3992,6 +3992,14 @@ function answerQuestion(data: FinancialRow[], project: string, question: string,
 
   // Helper to check if a word looks like an item code (e.g., "2.1", "1.2.3")
   const isItemCodePattern = (word: string) => /^\d+(\.\d+)+$/.test(word)
+  
+  // Helper to check if a word is a PARENT_ITEM_MAP keyword
+  // These words should NOT be used for Data_Type matching because they'll
+  // match child items incorrectly (e.g., "prelim" matching "Preliminaries - -Manpower")
+  const isParentItemKeyword = (word: string) => {
+    const lower = word.toLowerCase()
+    return Object.keys(PARENT_ITEM_MAP).some(key => key === lower || key.includes(lower))
+  }
 
   if (!targetDataType) {
     for (const dt of dataTypes) {
@@ -4007,6 +4015,8 @@ function answerQuestion(data: FinancialRow[], project: string, question: string,
         // Skip words that are Financial_Type keywords (e.g., "projected", "budget")
         // This prevents "projected" from matching "Project Code" in Data_Type
         if (isFinancialTypeKeyword(qWord)) continue
+        // Skip words that are PARENT_ITEM_MAP keywords - they'll be handled by Item_Code filtering
+        if (isParentItemKeyword(qWord)) continue
         
         for (const dtWord of dtWords) {
           if (qWord === dtWord) {
@@ -4025,6 +4035,8 @@ function answerQuestion(data: FinancialRow[], project: string, question: string,
         if (isItemCodePattern(qWord)) continue
         // Skip words that are Financial_Type keywords
         if (isFinancialTypeKeyword(qWord)) continue
+        // Skip words that are PARENT_ITEM_MAP keywords
+        if (isParentItemKeyword(qWord)) continue
 
         for (const dtWord of dtWords) {
           const qLen = qWord.length
@@ -4055,6 +4067,8 @@ function answerQuestion(data: FinancialRow[], project: string, question: string,
       if (isItemCodePattern(word)) continue
       // Skip words that are Financial_Type keywords
       if (isFinancialTypeKeyword(word)) continue
+      // Skip words that are PARENT_ITEM_MAP keywords
+      if (isParentItemKeyword(word)) continue
       
       const match = findClosestMatch(word, dataTypes)
       if (match) {
