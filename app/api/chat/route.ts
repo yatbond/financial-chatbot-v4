@@ -4225,11 +4225,18 @@ function answerQuestion(data: FinancialRow[], project: string, question: string,
   response += `\n`
 
   // Build source ref for the total
-  const totalSourceRef = filtered.length === 1 
-    ? ` ${formatSourceRef(filtered[0], isDebug)}` 
-    : filtered.length > 1 
-      ? (isDebug ? ` [sum of ${filtered.length} rows]` : ' Row ##')
-      : ''
+  let totalSourceRef = ''
+  if (filtered.length === 1) {
+    totalSourceRef = ` ${formatSourceRef(filtered[0], isDebug)}`
+  } else if (filtered.length > 1) {
+    if (isDebug) {
+      totalSourceRef = ` [sum of ${filtered.length} rows]`
+    } else {
+      // Show row numbers of all filtered rows
+      const rowNumbers = filtered.map(r => r._rowNumber || '??').join(', ')
+      totalSourceRef = ` Row ${rowNumbers}`
+    }
+  }
   response += `**Total: ${formatCurrency(total)}${totalSourceRef}** ('000)\n\n`
 
   // Only show "By Item Code" breakdown if no specific item code was filtered
@@ -4237,13 +4244,19 @@ function answerQuestion(data: FinancialRow[], project: string, question: string,
     response += `**By Item Code:**\n`
     itemGroups.forEach((rows, itemCode) => {
       const itemTotal = rows.reduce((sum, d) => sum + toNumber(d.Value), 0)
-    const itemSourceRef = rows.length === 1 
-      ? ` ${formatSourceRef(rows[0], isDebug)}` 
-      : rows.length > 1 
-        ? ` ${formatSourceRef(rows[0], isDebug)}`
-        : ''
-    response += `• Item ${itemCode}: ${formatCurrency(itemTotal)}${itemSourceRef}\n`
-  })
+      let itemSourceRef = ''
+      if (rows.length === 1) {
+        itemSourceRef = ` ${formatSourceRef(rows[0], isDebug)}`
+      } else if (rows.length > 1) {
+        if (isDebug) {
+          itemSourceRef = ` [sum of ${rows.length} rows]`
+        } else {
+          const rowNumbers = rows.map(r => r._rowNumber || '??').join(', ')
+          itemSourceRef = ` Row ${rowNumbers}`
+        }
+      }
+      response += `• Item ${itemCode}: ${formatCurrency(itemTotal)}${itemSourceRef}\n`
+    })
   } // End of if (!targetItemCode)
 
   // Create candidates for clickable selection
