@@ -2743,7 +2743,7 @@ function handleComparisonQuery(data: FinancialRow[], project: string, question: 
   }
 
   // Still provide candidates for drill-down
-  const candidates = allRows.slice(0, 10).map((d, i) => ({
+  const candidates = allRows.slice(0, 5).map((d, i) => ({
     id: i + 1,
     value: d.Value,
     score: 100,
@@ -4358,7 +4358,7 @@ function answerQuestion(data: FinancialRow[], project: string, question: string,
       rowNumber: d._rowNumber,  // Include CSV row number
       matchedKeywords: Array.from(new Set(matchedKeywords)) // Remove duplicates
     }
-  }).sort((a, b) => b.score - a.score).slice(0, 10)
+  }).sort((a, b) => b.score - a.score).slice(0, 5)
 
   // Reassign IDs after sorting
   const candidates = allCandidates.map((c, i) => ({ ...c, id: i + 1 }))
