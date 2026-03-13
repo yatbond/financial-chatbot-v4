@@ -3652,10 +3652,16 @@ function handleAnalyzeQuery(data: FinancialRow[], project: string, debugMode: bo
 
 // Handle "detail" command after a regular query
 // Shows child items of the last matched item
-function handleQueryDetail(data: FinancialRow[], project: string, context: QueryContext, debugMode: boolean = false): FuzzyResult | null {
+// Supports "detail" (show children) and "detail N" (drill into specific child)
+function handleQueryDetail(data: FinancialRow[], project: string, context: QueryContext, question: string, debugMode: boolean = false): FuzzyResult | null {
   if (!context.itemCode) return null
   
   const projectData = data.filter(d => d._project === project)
+  const lowerQ = question.toLowerCase().trim()
+  
+  // Parse "detail N" to drill into specific child
+  const detailMatch = lowerQ.match(/^detail\s+(\d+)$/)
+  const drillIndex = detailMatch ? parseInt(detailMatch[1]) - 1 : null  // Convert to 0-based index
   
   // Find all child items (items with Item_Code starting with parent code + .)
   const childPrefix = context.itemCode + '.'
@@ -3701,23 +3707,107 @@ function handleQueryDetail(data: FinancialRow[], project: string, context: Query
     return 0
   })
   
-  // Build response
+  // If "detail N" requested, drill into that specific child
+  if (drillIndex !== null) {
+    if (drillIndex < 0 || drillIndex >= sortedChildren.length) {
+      return {
+        text: `❌ Invalid detail number. Please use a number between 1 and ${sortedChildren.length}.`,
+        candidates: []
+      }
+    }
+    
+    const [targetChildCode, targetGroup] = sortedChildren[drillIndex]
+    const targetChildName = targetGroup.rows[0]?.Data_Type || 'Unknown'
+    
+    // Find grandchildren under this child
+    const grandchildPrefix = targetChildCode + '.'
+    const grandchildRows = projectData.filter(d => 
+      d.Item_Code.startsWith(grandchildPrefix) &&
+      (!context.finType || d.Financial_Type === context.finType) &&
+      (!context.sheet || d.Sheet_Name === context.sheet) &&
+      (!context.month || d.Month === context.month) &&
+      (!context.year || d.Year === context.year)
+    )
+    
+    if (grandchildRows.length === 0) {
+      return {
+        text: `❌ No sub-items found for **${targetChildCode} - ${targetChildName}**.\n\nThis is a leaf-level item with no further breakdown.`,
+        candidates: []
+      }
+    }
+    
+    // Group grandchildren
+    const grandchildGroups = new Map<string, { rows: FinancialRow[]; total: number }>()
+    grandchildRows.forEach(row => {
+      const remaining = row.Item_Code.slice(grandchildPrefix.length)
+      const immediateGrandchild = remaining.split('.')[0]
+      const grandchildCode = grandchildPrefix + immediateGrandchild
+      
+      if (!grandchildGroups.has(grandchildCode)) {
+        grandchildGroups.set(grandchildCode, { rows: [], total: 0 })
+      }
+      const group = grandchildGroups.get(grandchildCode)!
+      group.rows.push(row)
+      group.total += toNumber(row.Value)
+    })
+    
+    // Sort grandchildren
+    const sortedGrandchildren = Array.from(grandchildGroups.entries()).sort((a, b) => {
+      const aParts = a[0].split('.').map(Number)
+      const bParts = b[0].split('.').map(Number)
+      for (let i = 0; i < Math.max(aParts.length, bParts.length); i++) {
+        const diff = (aParts[i] || 0) - (bParts[i] || 0)
+        if (diff !== 0) return diff
+      }
+      return 0
+    })
+    
+    // Build drill-down response
+    let response = `## Detail ${drillIndex + 1}: ${targetChildName}\n\n`
+    response += `**Parent:** ${targetChildCode} - ${targetChildName}\n`
+    if (context.finType) response += `**Financial Type:** ${context.finType}\n`
+    if (context.sheet) response += `**Sheet:** ${context.sheet}\n`
+    response += `\n| # | Item Code | Name | Value ('000) |\n`
+    response += `|---|-----------|------|-------------|\n`
+    
+    let grandTotal = 0
+    sortedGrandchildren.forEach(([grandchildCode, group], idx) => {
+      const grandchildName = group.rows[0]?.Data_Type || 'Unknown'
+      const ref = group.rows.length > 0 ? ` ${formatSourceRef(group.rows[0], debugMode)}` : ''
+      response += `| [${idx + 1}] | ${grandchildCode} | ${grandchildName} | ${formatCurrency(group.total)}${ref} |\n`
+      grandTotal += group.total
+    })
+    
+    response += `| | **Total** | | **${formatCurrency(grandTotal)}** |\n`
+    response += `\n💡 Type **detail N** to drill into a sub-item, or **detail** to see siblings.`
+    
+    // Store context for further drill-down into grandchildren
+    queryContextCache.set(project, {
+      ...context,
+      itemCode: targetChildCode,
+      itemName: targetChildName
+    })
+    
+    return { text: response, candidates: [] }
+  }
+  
+  // "detail" without number - show children list with numbered indices
   let response = `## Detail: ${context.itemName || context.itemCode}\n\n`
   response += `**Parent:** ${context.itemCode} - ${context.itemName || 'Item'}\n`
   if (context.finType) response += `**Financial Type:** ${context.finType}\n`
   if (context.sheet) response += `**Sheet:** ${context.sheet}\n`
-  response += `\n| Item Code | Name | Value ('000) |\n`
-  response += `|-----------|------|-------------|\n`
+  response += `\n| # | Item Code | Name | Value ('000) |\n`
+  response += `|---|-----------|------|-------------|\n`
   
   let grandTotal = 0
-  for (const [childCode, group] of sortedChildren) {
+  sortedChildren.forEach(([childCode, group], idx) => {
     const childName = group.rows[0]?.Data_Type || 'Unknown'
     const ref = group.rows.length > 0 ? ` ${formatSourceRef(group.rows[0], debugMode)}` : ''
-    response += `| ${childCode} | ${childName} | ${formatCurrency(group.total)}${ref} |\n`
+    response += `| [${idx + 1}] | ${childCode} | ${childName} | ${formatCurrency(group.total)}${ref} |\n`
     grandTotal += group.total
-  }
+  })
   
-  response += `| **Total** | | **${formatCurrency(grandTotal)}** |\n`
+  response += `| | **Total** | | **${formatCurrency(grandTotal)}** |\n`
   response += `\n💡 Type **detail N** (e.g., detail 1) to drill down further into a specific child.`
   
   // Store context for further drill-down
@@ -3910,7 +4000,7 @@ function answerQuestion(data: FinancialRow[], project: string, question: string,
     // Try regular query detail (if query context exists)
     const queryContext = queryContextCache.get(project)
     if (queryContext && queryContext.itemCode) {
-      const detailResult = handleQueryDetail(data, project, queryContext, isDebug)
+      const detailResult = handleQueryDetail(data, project, queryContext, question, isDebug)
       if (detailResult) return detailResult
     }
 
