@@ -158,6 +158,7 @@ export default function Home() {
   const [debugData, setDebugData] = useState<any>(null)
 
   const [guideTab, setGuideTab] = useState<'commands' | 'financial' | 'data'>('commands')
+  const [queryContext, setQueryContext] = useState<any>(null)  // Store context for "detail" commands
 
   const messagesEndRef = useRef<HTMLDivElement>(null)
 
@@ -261,10 +262,23 @@ export default function Home() {
       const res = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'query', year: selectedYear, month: selectedMonth, project: selectedProject, projectFile: selectedFile, question: userMessage })
+        body: JSON.stringify({ 
+          action: 'query', 
+          year: selectedYear, 
+          month: selectedMonth, 
+          project: selectedProject, 
+          projectFile: selectedFile, 
+          question: userMessage,
+          queryContext  // Send stored context for "detail" commands
+        })
       })
       const data = await res.json()
       setMessages(prev => [...prev, { role: 'assistant', content: data.response, candidates: data.candidates || [] }])
+
+      // Store queryContext for next request (enables "detail" command across requests)
+      if (data.queryContext) {
+        setQueryContext(data.queryContext)
+      }
 
       const metricsRes = await fetch('/api/chat', {
         method: 'POST',
@@ -284,6 +298,7 @@ export default function Home() {
   const handleProjectSelect = (val: string) => {
     setSelectedProject(val)
     setSearchQuery('')
+    setQueryContext(null)  // Reset context when changing project
     const found = availableProjects.find(p => `${p.code} - ${p.name}` === val)
     if (found) loadProjectData(found.filename, val)
   }
