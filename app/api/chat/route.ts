@@ -2423,41 +2423,61 @@ function handleComparisonQuery(data: FinancialRow[], project: string, question: 
   const finType1 = matchFinancialType(compParts.side1, financialTypes)
   const finType2 = matchFinancialType(compParts.side2, financialTypes)
 
-  // === FEATURE 2: Extract the metric (Data_Type) OR item code to compare ===
-  const metricResult = extractComparisonMetric(expandedQuestion, dataTypes)
-  let targetDataType = metricResult.metric
-  let extractedItemCode = metricResult.itemCode
-
-  // If an item code was extracted but no metric name resolved, look up Data_Type from data.
-  // NOTE: When extractComparisonMetric() matched a PARENT_ITEM_MAP entry, it already
-  // returns both metric (parent name) AND itemCode, so this block is skipped — which is
-  // correct because the PARENT_ITEM_MAP name is more reliable than a raw Data_Type lookup
-  // that could return a child item's name (e.g., "Subcontractor - -Contract Works" for 2.4.1
-  // instead of "Subcontractor" for 2.4).
-  if (extractedItemCode && !targetDataType) {
-    // Only look up from Financial Status sheet for consistency, and prefer exact match
+  // === FEATURE 2: Extract metric/item code for BOTH sides for cross-metric comparison ===
+  const metricResult1 = extractComparisonMetric(compParts.side1, dataTypes)
+  const metricResult2 = extractComparisonMetric(compParts.side2, dataTypes)
+  
+  // Resolve side-specific targets
+  let targetDataType1 = metricResult1.metric
+  let targetItemCode1 = metricResult1.itemCode
+  if (targetItemCode1 && !targetDataType1) {
     const itemRow = projectData.find(d => 
-      d.Sheet_Name === 'Financial Status' && d.Item_Code === extractedItemCode
-    ) || projectData.find(d => d.Item_Code === extractedItemCode)
-    if (itemRow) {
-      targetDataType = itemRow.Data_Type
-    }
+      d.Sheet_Name === 'Financial Status' && d.Item_Code === targetItemCode1
+    ) || projectData.find(d => d.Item_Code === targetItemCode1)
+    if (itemRow) targetDataType1 = itemRow.Data_Type
   }
+  if (!targetItemCode1 && targetDataType1) {
+    targetItemCode1 = getItemCodeFromMetric(targetDataType1)
+  }
+
+  let targetDataType2 = metricResult2.metric
+  let targetItemCode2 = metricResult2.itemCode
+  if (targetItemCode2 && !targetDataType2) {
+    const itemRow = projectData.find(d => 
+      d.Sheet_Name === 'Financial Status' && d.Item_Code === targetItemCode2
+    ) || projectData.find(d => d.Item_Code === targetItemCode2)
+    if (itemRow) targetDataType2 = itemRow.Data_Type
+  }
+  if (!targetItemCode2 && targetDataType2) {
+    targetItemCode2 = getItemCodeFromMetric(targetDataType2)
+  }
+
+  // Fallback if one side is a simple date (e.g., "compare income vs aug 2025")
+  if (!targetDataType1 && !targetItemCode1) {
+    targetDataType1 = targetDataType2
+    targetItemCode1 = targetItemCode2
+  }
+  if (!targetDataType2 && !targetItemCode2) {
+    targetDataType2 = targetDataType1
+    targetItemCode2 = targetItemCode1
+  }
+
+  // Overall target metric (for display/fallback)
+  const targetDataType = targetDataType1 === targetDataType2 ? targetDataType1 : `${targetDataType1} vs ${targetDataType2}`
+  let targetItemCode = targetItemCode1 === targetItemCode2 ? targetItemCode1 : undefined
 
   // Parse dates from both sides
   const date1 = parseDate(compParts.side1, defaultMonth)
   const date2 = parseDate(compParts.side2, defaultMonth)
 
-  // Determine comparison type: by Financial_Type or by Date
-  const compareByDate = finType1 && finType1 === finType2 && (date1.month || date2.month)
-  const compareByFinType = finType1 && finType2 && finType1 !== finType2
+  // Determine comparison type: by Financial_Type, by Date, or by Metric
+  const sameFinType = finType1 && finType1 === finType2
+  const sameDate = date1.month === date2.month && date1.year === date2.year
+  const diffMetric = (targetDataType1 !== targetDataType2) || (targetItemCode1 !== targetItemCode2)
 
-  // === FEATURE 2: Use extracted item code if available ===
-  // Priority: extractedItemCode > getItemCodeFromMetric
-  let targetItemCode: string | null = extractedItemCode
-  if (!targetItemCode && targetDataType) {
-    targetItemCode = getItemCodeFromMetric(targetDataType)
-  }
+  const compareByDate = sameFinType && !sameDate
+  const compareByFinType = finType1 && finType2 && finType1 !== finType2
+  const compareByMetric = sameFinType && (sameDate || (!date1.month && !date2.month)) && diffMetric
 
   // Detect target sheet from query (e.g., "cashflow" → "Cash Flow")
   // IMPORTANT: For cross-type comparisons (compareByFinType), ALWAYS use Financial Status
@@ -2493,7 +2513,7 @@ function handleComparisonQuery(data: FinancialRow[], project: string, question: 
   }
   // For compareByFinType: keep targetSheet = 'Financial Status' (has all types)
 
-  if (!compareByDate && !compareByFinType) {
+  if (!compareByDate && !compareByFinType && !compareByMetric) {
     // Can't determine comparison type - fall back to normal query
     return null
   }
@@ -2503,8 +2523,8 @@ function handleComparisonQuery(data: FinancialRow[], project: string, question: 
   let label1 = ''
   let label2 = ''
 
-  if (compareByDate) {
-    // Compare same metric across different dates
+  if (compareByDate || compareByMetric) {
+    // Compare same metric across different dates OR cross-metric comparison on same date
     // IMPORTANT: For "cash flow" type queries, data may be in different sheets:
     // - Cash Flow sheet (monthly data) for historical months
     // - Financial Status sheet (Cash Flow Actual received & paid as at) for current month
@@ -2523,7 +2543,7 @@ function handleComparisonQuery(data: FinancialRow[], project: string, question: 
     const cashFlowSheet = findMatchingSheet('Cash Flow') || findMatchingSheet('Cashflow')
     
     // Helper to find data for a specific date and metric
-    const findValueForDate = (date: { month?: string | null; year?: string | null }): { total: number; rows: FinancialRow[]; label: string } => {
+    const findValueForDate = (date: { month?: string | null; year?: string | null }, tItemCode: string | null | undefined, tDataType: string | null | undefined): { total: number; rows: FinancialRow[]; label: string } => {
       // Try multiple sources in order of preference
       // Use actual sheet names found in the data
       const sources: Array<{ sheet: string | null; finTypePattern: string; displayFinType: string }> = []
@@ -2568,11 +2588,11 @@ function handleComparisonQuery(data: FinancialRow[], project: string, question: 
         }
         
         // Use EXACT Item_Code match if available, otherwise exact Data_Type match
-        if (targetItemCode) {
-          filtered = filtered.filter(d => d.Item_Code === targetItemCode)
-        } else if (targetDataType) {
+        if (tItemCode) {
+          filtered = filtered.filter(d => d.Item_Code === tItemCode)
+        } else if (tDataType) {
           // Exact match to avoid matching children (e.g., "Subcontractor" not "Contract Works")
-          filtered = filtered.filter(d => d.Data_Type.toLowerCase() === targetDataType.toLowerCase())
+          filtered = filtered.filter(d => d.Data_Type.toLowerCase() === tDataType.toLowerCase())
         }
         
         if (date.month) {
@@ -2584,20 +2604,23 @@ function handleComparisonQuery(data: FinancialRow[], project: string, question: 
         
         if (filtered.length > 0) {
           const total = filtered.reduce((sum, d) => sum + toNumber(d.Value), 0)
+          // Include metric description if it's a cross-metric comparison
+          const metricDesc = compareByMetric && tDataType ? `${tDataType} - ` : ''
           // Use the display financial type for the label, not the actual data value
           return { 
             total, 
             rows: filtered, 
-            label: `${source.displayFinType} (${date.month}/${date.year})`
+            label: `${metricDesc}${source.displayFinType} (${date.month}/${date.year})`
           }
         }
       }
       
-      return { total: 0, rows: [], label: `${finType1 || 'Cash Flow'} (${date.month}/${date.year})` }
+      const metricDesc = compareByMetric && tDataType ? `${tDataType} - ` : ''
+      return { total: 0, rows: [], label: `${metricDesc}${finType1 || 'Cash Flow'} (${date.month}/${date.year})` }
     }
 
-    const r1 = findValueForDate(date1)
-    const r2 = findValueForDate(date2)
+    const r1 = findValueForDate(date1, targetItemCode1, targetDataType1)
+    const r2 = findValueForDate(date2, targetItemCode2, targetDataType2)
     result1 = { total: r1.total, rows: r1.rows }
     result2 = { total: r2.total, rows: r2.rows }
     label1 = r1.label
