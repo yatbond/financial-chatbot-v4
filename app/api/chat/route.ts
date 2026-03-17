@@ -2691,14 +2691,14 @@ function handleComparisonQuery(data: FinancialRow[], project: string, question: 
   const allRows = [...result1.rows, ...result2.rows]
   
   // Get the parent item code from the results
-  // PRIORITY: Use extractedItemCode (from PARENT_ITEM_MAP) if available,
+  // PRIORITY: Use targetItemCode1 (from PARENT_ITEM_MAP) if available,
   // then fall back to getItemCodeFromMetric, then to the first result row.
   let parentItemCode: string | undefined
-  if (extractedItemCode) {
+  if (targetItemCode1) {
     // Use the PARENT_ITEM_MAP code directly — most reliable
-    parentItemCode = extractedItemCode
-  } else if (targetDataType) {
-    const derivedItemCode = getItemCodeFromMetric(targetDataType)
+    parentItemCode = targetItemCode1
+  } else if (targetDataType1) {
+    const derivedItemCode = getItemCodeFromMetric(targetDataType1)
     if (derivedItemCode) {
       parentItemCode = derivedItemCode
     } else if (allRows.length > 0) {
