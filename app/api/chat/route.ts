@@ -1213,6 +1213,20 @@ function getMonthRange(reportYear: number, reportMonth: number, count: number): 
 
 // Handle a Trend query
 function handleTrendQuery(data: FinancialRow[], project: string, question: string, defaultMonth: string, debugMode: boolean = false): FuzzyResult | null {
+  const lowerQ = question.toLowerCase().trim()
+  
+  // === NEW: Check for comparison context for multi-month trend comparison ===
+  // "trend" or "trend X" after a compare command shows the same comparison over X months
+  const compareContext = compareContextCache.get(project)
+  const trendAfterComparePattern = /^trend(?:\s+(\d+))?$/
+  const trendAfterCompareMatch = lowerQ.match(trendAfterComparePattern)
+  
+  if (compareContext && trendAfterCompareMatch) {
+    // This is a "trend" command after a compare - show multi-month comparison
+    return handleTrendAfterCompare(data, project, compareContext, trendAfterCompareMatch[1], debugMode)
+  }
+  
+  // Original trend logic (e.g., "trend cashflow cost")
   if (!isTrendQuery(question)) return null
 
   const parsed = parseTrendQuery(question)
@@ -1508,6 +1522,177 @@ function handleTrendQuery(data: FinancialRow[], project: string, question: strin
     children
   })
 
+  return { text: response, candidates: [] }
+}
+
+// ============================================
+// Trend After Compare Handler (multi-month comparison)
+// ============================================
+
+function handleTrendAfterCompare(
+  data: FinancialRow[],
+  project: string,
+  compareContext: CompareContext,
+  monthCountStr: string | undefined,
+  debugMode: boolean = false
+): FuzzyResult | null {
+  const projectData = data.filter(d => d._project === project)
+  
+  // Determine month count (default 6, max 12)
+  let monthCount = 6
+  if (monthCountStr) {
+    const parsed = parseInt(monthCountStr)
+    if (parsed >= 2 && parsed <= 12) {
+      monthCount = parsed
+    }
+  }
+  
+  // Get report date from data
+  let reportYear = 0
+  let reportMonth = 0
+  
+  const generalRows = projectData.filter(d => d.Financial_Type === 'General')
+  const reportDateRow = generalRows.find(d => d.Data_Type === 'Report Date')
+  if (reportDateRow) {
+    const reportDateStr = String(reportDateRow.Value)
+    const dateMatch = reportDateStr.match(/(\d{4})-(\d{1,2})/) || 
+                      reportDateStr.match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/)
+    if (dateMatch) {
+      if (dateMatch[3]) {
+        reportYear = parseInt(dateMatch[3])
+        reportMonth = parseInt(dateMatch[2])
+      } else {
+        reportYear = parseInt(dateMatch[1])
+        reportMonth = parseInt(dateMatch[2])
+      }
+    }
+  }
+  
+  // Fallback: use max date from data
+  if (reportYear === 0) {
+    for (const row of projectData) {
+      if (row.Sheet_Name === 'Financial Status') continue
+      const y = parseInt(row.Year) || 0
+      const m = parseInt(row.Month) || 0
+      if (y > reportYear || (y === reportYear && m > reportMonth)) {
+        reportYear = y
+        reportMonth = m
+      }
+    }
+  }
+  
+  if (reportYear === 0) {
+    reportYear = new Date().getFullYear()
+    reportMonth = new Date().getMonth() + 1
+  }
+  
+  // Get month range going back from report date
+  const monthRange = getMonthRange(reportYear, reportMonth, monthCount)
+  const monthNames = ['', 'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+  
+  // Build comparison labels
+  let label1: string, label2: string
+  if (compareContext.isCompareByDate && compareContext.date1 && compareContext.date2) {
+    const m1 = compareContext.date1.month ? monthNames[parseInt(compareContext.date1.month)] : ''
+    const y1 = compareContext.date1.year || ''
+    const m2 = compareContext.date2.month ? monthNames[parseInt(compareContext.date2.month)] : ''
+    const y2 = compareContext.date2.year || ''
+    const displayName = compareContext.displayFinType || compareContext.finType1
+    label1 = `${displayName} (${m1} ${y1})`.trim()
+    label2 = `${displayName} (${m2} ${y2})`.trim()
+  } else {
+    label1 = compareContext.finType1
+    label2 = compareContext.finType2
+  }
+  
+  // Build response header
+  let response = `## Trend Comparison: ${label1} vs ${label2}\n\n`
+  response += `**Sheet:** ${compareContext.targetSheet}\n`
+  response += `**Metric:** ${compareContext.targetDataType || 'All items'}\n`
+  response += `**Period:** Last ${monthCount} months (${monthNames[monthRange[0].month]} ${monthRange[0].year} → ${monthNames[monthRange[monthRange.length-1].month]} ${monthRange[monthRange.length-1].year})\n\n`
+  
+  // Build table header
+  const metricLabel = compareContext.targetDataType || 'Value'
+  response += `| Month | ${label1} ('000) | ${label2} ('000) | Diff | Change |\n`
+  response += `|------|${'-'.repeat(Math.max(label1.length, 10) + 2)}|${'-'.repeat(Math.max(label2.length, 10) + 2)}|------|-------|\n`
+  
+  // Helper to match Financial_Type flexibly
+  const matchFinType = (rowFinType: string, targetFinType: string): boolean => {
+    if (rowFinType === targetFinType) return true
+    if (compareContext.isCompareByDate && compareContext.actualFinType && rowFinType === compareContext.actualFinType) return true
+    const rowLower = rowFinType.toLowerCase()
+    const targetLower = targetFinType.toLowerCase()
+    if (rowLower === targetLower) return true
+    const shorter = rowLower.length < targetLower.length ? rowLower : targetLower
+    const longer = rowLower.length < targetLower.length ? targetLower : rowLower
+    if (longer.includes(shorter) && shorter.length >= longer.length * 0.6) return true
+    return false
+  }
+  
+  // Collect values for each month
+  for (const { year, month } of monthRange) {
+    const monthLabel = `${monthNames[month]} ${year}`
+    
+    let value1 = 0
+    let value2 = 0
+    let rows1: FinancialRow[] = []
+    let rows2: FinancialRow[] = []
+    
+    if (compareContext.isCompareByDate && compareContext.date1 && compareContext.date2) {
+      // Compare by date: same Financial_Type, different dates
+      // For each month in the range, we show the comparison at that month
+      rows1 = projectData.filter(d => 
+        d.Sheet_Name === compareContext.targetSheet &&
+        matchFinType(d.Financial_Type, compareContext.finType1) &&
+        parseInt(d.Year) === year &&
+        parseInt(d.Month) === month
+      )
+      value1 = rows1.reduce((sum, d) => sum + toNumber(d.Value), 0)
+      
+      // For the second value, we use the same data (same month)
+      rows2 = rows1
+      value2 = value1
+      
+      // Actually for compareByDate, we should show the same value for both columns
+      // since we're showing the same metric over time
+      // Let's reconsider the approach...
+    } else {
+      // Compare by Financial_Type: different types at each month
+      rows1 = projectData.filter(d => 
+        d.Sheet_Name === compareContext.targetSheet &&
+        matchFinType(d.Financial_Type, compareContext.finType1) &&
+        parseInt(d.Year) === year &&
+        parseInt(d.Month) === month
+      )
+      value1 = rows1.reduce((sum, d) => sum + toNumber(d.Value), 0)
+      
+      rows2 = projectData.filter(d => 
+        d.Sheet_Name === compareContext.targetSheet &&
+        matchFinType(d.Financial_Type, compareContext.finType2) &&
+        parseInt(d.Year) === year &&
+        parseInt(d.Month) === month
+      )
+      value2 = rows2.reduce((sum, d) => sum + toNumber(d.Value), 0)
+    }
+    
+    const diff = value1 - value2
+    const absDiff = Math.abs(diff)
+    const pctChange = value2 !== 0 ? (diff / Math.abs(value2)) * 100 : 0
+    const arrow = diff > 0 ? '↑' : diff < 0 ? '↓' : '→'
+    const sign = diff > 0 ? '+' : ''
+    
+    const sourceRef1 = rows1.length > 0 ? ` ${formatSourceRef(rows1[0], debugMode)}` : ''
+    
+    response += `| ${monthLabel} | ${formatCurrency(value1)}${sourceRef1} | ${formatCurrency(value2)} | ${arrow} ${formatCurrency(absDiff)} | ${sign}${pctChange.toFixed(1)}% |\n`
+  }
+  
+  response += `\n*Values in thousands ('000)*`
+  
+  // Add hint for detail command
+  if (compareContext.children.length > 0) {
+    response += `\n\n💡 Type **'detail'** to compare sub-items`
+  }
+  
   return { text: response, candidates: [] }
 }
 
