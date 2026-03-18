@@ -261,6 +261,11 @@ interface CompareContext {
   parentItemCode?: string  // Parent item code for finding children
   displayFinType?: string  // Short display name (e.g., "Cash Flow" instead of full Financial_Type)
   actualFinType?: string   // Actual Financial_Type from the data (e.g., "Cash Flow" from Cash Flow sheet)
+  // For cross-metric comparison trend support
+  targetDataType1?: string  // First metric name (e.g., "Income")
+  targetDataType2?: string  // Second metric name (e.g., "Less : Cost")
+  targetItemCode1?: string  // First metric's item code (e.g., "1")
+  targetItemCode2?: string  // Second metric's item code (e.g., "2")
 }
 
 // Global cache for last Compare context (per project)
@@ -1600,8 +1605,18 @@ function handleTrendAfterCompare(
   const monthNames = ['', 'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
   
   // Build comparison labels
+  // For cross-metric comparisons (same Financial Type, different metrics), use metric names
+  // For Financial Type comparisons, use the Financial Type names
   let label1: string, label2: string
-  if (compareContext.isCompareByDate && compareContext.date1 && compareContext.date2) {
+  let isCrossMetricComparison = false
+  
+  if (compareContext.targetDataType1 && compareContext.targetDataType2 && 
+      compareContext.targetDataType1 !== compareContext.targetDataType2) {
+    // Cross-metric comparison (e.g., Income vs Cost)
+    isCrossMetricComparison = true
+    label1 = compareContext.targetDataType1
+    label2 = compareContext.targetDataType2
+  } else if (compareContext.isCompareByDate && compareContext.date1 && compareContext.date2) {
     const m1 = compareContext.date1.month ? monthNames[parseInt(compareContext.date1.month)] : ''
     const y1 = compareContext.date1.year || ''
     const m2 = compareContext.date2.month ? monthNames[parseInt(compareContext.date2.month)] : ''
@@ -1614,9 +1629,28 @@ function handleTrendAfterCompare(
     label2 = compareContext.finType2
   }
   
+  // Determine which sheet to use for monthly data
+  // For Cash Flow metrics, use Cash Flow sheet (has monthly data)
+  // For other metrics, use the sheet from compare context
+  const availableSheets = getUniqueValues(data, project, 'Sheet_Name')
+  let trendSheet = compareContext.targetSheet
+  
+  // Check if this is a Cash Flow metric by checking the Financial Type or Data Type
+  const isCashFlowMetric = compareContext.finType1?.toLowerCase().includes('cash flow') ||
+                           compareContext.targetDataType1?.toLowerCase().includes('cash flow') ||
+                           compareContext.finType2?.toLowerCase().includes('cash flow') ||
+                           compareContext.targetDataType2?.toLowerCase().includes('cash flow')
+  
+  if (isCashFlowMetric) {
+    const cfSheet = availableSheets.find(s => 
+      s.toLowerCase().includes('cash flow') || s.toLowerCase() === 'cashflow'
+    )
+    if (cfSheet) trendSheet = cfSheet
+  }
+  
   // Build response header
   let response = `## Trend Comparison: ${label1} vs ${label2}\n\n`
-  response += `**Sheet:** ${compareContext.targetSheet}\n`
+  response += `**Sheet:** ${trendSheet}\n`
   response += `**Metric:** ${compareContext.targetDataType || 'All items'}\n`
   response += `**Period:** Last ${monthCount} months (${monthNames[monthRange[0].month]} ${monthRange[0].year} → ${monthNames[monthRange[monthRange.length-1].month]} ${monthRange[monthRange.length-1].year})\n\n`
   
@@ -1628,7 +1662,7 @@ function handleTrendAfterCompare(
   // Helper to match Financial_Type flexibly
   const matchFinType = (rowFinType: string, targetFinType: string): boolean => {
     if (rowFinType === targetFinType) return true
-    if (compareContext.isCompareByDate && compareContext.actualFinType && rowFinType === compareContext.actualFinType) return true
+    if (compareContext.actualFinType && rowFinType === compareContext.actualFinType) return true
     const rowLower = rowFinType.toLowerCase()
     const targetLower = targetFinType.toLowerCase()
     if (rowLower === targetLower) return true
@@ -1647,11 +1681,33 @@ function handleTrendAfterCompare(
     let rows1: FinancialRow[] = []
     let rows2: FinancialRow[] = []
     
-    if (compareContext.isCompareByDate && compareContext.date1 && compareContext.date2) {
+    if (isCrossMetricComparison) {
+      // Cross-metric comparison: same Financial Type, different Data_Type/Item_Code
+      // Filter by Item_Code if available, otherwise by Data_Type
+      rows1 = projectData.filter(d => 
+        d.Sheet_Name === trendSheet &&
+        matchFinType(d.Financial_Type, compareContext.finType1) &&
+        parseInt(d.Year) === year &&
+        parseInt(d.Month) === month &&
+        (compareContext.targetItemCode1 ? d.Item_Code === compareContext.targetItemCode1 : 
+         compareContext.targetDataType1 ? d.Data_Type.toLowerCase().includes(compareContext.targetDataType1.toLowerCase()) : true)
+      )
+      value1 = rows1.reduce((sum, d) => sum + toNumber(d.Value), 0)
+      
+      rows2 = projectData.filter(d => 
+        d.Sheet_Name === trendSheet &&
+        matchFinType(d.Financial_Type, compareContext.finType1) &&  // Same Financial Type
+        parseInt(d.Year) === year &&
+        parseInt(d.Month) === month &&
+        (compareContext.targetItemCode2 ? d.Item_Code === compareContext.targetItemCode2 : 
+         compareContext.targetDataType2 ? d.Data_Type.toLowerCase().includes(compareContext.targetDataType2.toLowerCase()) : true)
+      )
+      value2 = rows2.reduce((sum, d) => sum + toNumber(d.Value), 0)
+    } else if (compareContext.isCompareByDate && compareContext.date1 && compareContext.date2) {
       // Compare by date: same Financial_Type, different dates
       // For each month in the range, we show the comparison at that month
       rows1 = projectData.filter(d => 
-        d.Sheet_Name === compareContext.targetSheet &&
+        d.Sheet_Name === trendSheet &&
         matchFinType(d.Financial_Type, compareContext.finType1) &&
         parseInt(d.Year) === year &&
         parseInt(d.Month) === month
@@ -1661,14 +1717,10 @@ function handleTrendAfterCompare(
       // For the second value, we use the same data (same month)
       rows2 = rows1
       value2 = value1
-      
-      // Actually for compareByDate, we should show the same value for both columns
-      // since we're showing the same metric over time
-      // Let's reconsider the approach...
     } else {
       // Compare by Financial_Type: different types at each month
       rows1 = projectData.filter(d => 
-        d.Sheet_Name === compareContext.targetSheet &&
+        d.Sheet_Name === trendSheet &&
         matchFinType(d.Financial_Type, compareContext.finType1) &&
         parseInt(d.Year) === year &&
         parseInt(d.Month) === month
@@ -1676,7 +1728,7 @@ function handleTrendAfterCompare(
       value1 = rows1.reduce((sum, d) => sum + toNumber(d.Value), 0)
       
       rows2 = projectData.filter(d => 
-        d.Sheet_Name === compareContext.targetSheet &&
+        d.Sheet_Name === trendSheet &&
         matchFinType(d.Financial_Type, compareContext.finType2) &&
         parseInt(d.Year) === year &&
         parseInt(d.Month) === month
@@ -2963,7 +3015,12 @@ function handleComparisonQuery(data: FinancialRow[], project: string, question: 
     date2: compareByDate ? date2 : undefined,
     parentItemCode,
     displayFinType: displayLabel,
-    actualFinType: actualFinType1
+    actualFinType: actualFinType1,
+    // For cross-metric comparison trend support
+    targetDataType1: targetDataType1,
+    targetDataType2: targetDataType2,
+    targetItemCode1: targetItemCode1,
+    targetItemCode2: targetItemCode2
   })
   lastCompareDetailPage = 0
 
