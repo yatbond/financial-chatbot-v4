@@ -819,6 +819,7 @@ interface FuzzyResult {
     matchedKeywords: string[]
   }>
   queryContext?: QueryContext
+  compareContext?: CompareContext
 }
 
 // Parse date from question - maps "january 2025" or "2025 jan" or "jan" or "feb 25" or "1st month" or "last month" to month/year
