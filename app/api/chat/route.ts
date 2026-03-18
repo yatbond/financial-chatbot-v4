@@ -661,12 +661,6 @@ function getProjectMetrics(data: FinancialRow[], project: string) {
 
   const gpFilter = (d: FinancialRow) => d.Item_Code === '3' && d.Data_Type?.toLowerCase().includes('gross profit')
 
-  // Helper to convert Value to number safely
-  const toNumber = (val: number | string): number => {
-    if (typeof val === 'number') return val
-    return parseFloat(val) || 0
-  }
-
   const bp = projectData.filter(d =>
     d.Sheet_Name === 'Financial Status' &&
     d.Financial_Type?.toLowerCase().includes('business plan') &&
@@ -1227,16 +1221,8 @@ function handleTrendQuery(data: FinancialRow[], project: string, question: strin
   const trendAfterComparePattern = /^trend(?:\s+(\d+))?$/
   const trendAfterCompareMatch = lowerQ.match(trendAfterComparePattern)
   
-  // Debug logging (always log for now to diagnose the issue)
-  console.log('[TREND DEBUG] lowerQ:', lowerQ)
-  console.log('[TREND DEBUG] project:', project)
-  console.log('[TREND DEBUG] compareContext exists:', !!compareContext)
-  console.log('[TREND DEBUG] compareContextCache keys:', Array.from(compareContextCache.keys()))
-  console.log('[TREND DEBUG] trendAfterCompareMatch:', trendAfterCompareMatch)
-  
   if (compareContext && trendAfterCompareMatch) {
     // This is a "trend" command after a compare - show multi-month comparison
-    console.log('[TREND DEBUG] Calling handleTrendAfterCompare')
     return handleTrendAfterCompare(data, project, compareContext, trendAfterCompareMatch[1], debugMode)
   }
   
@@ -4709,12 +4695,6 @@ function answerQuestion(data: FinancialRow[], project: string, question: string,
     suggestions += `\n• Or try: "last month", "this month"`
     
     return { text: suggestions, candidates: [] }
-  }
-
-  // Helper to convert Value to number safely
-  const toNumber = (val: number | string): number => {
-    if (typeof val === 'number') return val
-    return parseFloat(val) || 0
   }
 
   // Format results
