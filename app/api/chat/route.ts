@@ -1221,8 +1221,18 @@ function handleTrendQuery(data: FinancialRow[], project: string, question: strin
   const trendAfterComparePattern = /^trend(?:\s+(\d+))?$/
   const trendAfterCompareMatch = lowerQ.match(trendAfterComparePattern)
   
+  // Debug logging
+  if (debugMode) {
+    console.log('[TREND DEBUG] lowerQ:', lowerQ)
+    console.log('[TREND DEBUG] compareContext exists:', !!compareContext)
+    console.log('[TREND DEBUG] trendAfterCompareMatch:', trendAfterCompareMatch)
+  }
+  
   if (compareContext && trendAfterCompareMatch) {
     // This is a "trend" command after a compare - show multi-month comparison
+    if (debugMode) {
+      console.log('[TREND DEBUG] Calling handleTrendAfterCompare')
+    }
     return handleTrendAfterCompare(data, project, compareContext, trendAfterCompareMatch[1], debugMode)
   }
   
