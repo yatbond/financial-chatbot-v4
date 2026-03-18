@@ -159,6 +159,7 @@ export default function Home() {
 
   const [guideTab, setGuideTab] = useState<'commands' | 'financial' | 'data'>('commands')
   const [queryContext, setQueryContext] = useState<any>(null)  // Store context for "detail" commands
+  const [compareContext, setCompareContext] = useState<any>(null)  // Store context for "trend" commands after compare
 
   const messagesEndRef = useRef<HTMLDivElement>(null)
 
@@ -269,7 +270,8 @@ export default function Home() {
           project: selectedProject, 
           projectFile: selectedFile, 
           question: userMessage,
-          queryContext  // Send stored context for "detail" commands
+          queryContext,  // Send stored context for "detail" commands
+          compareContext  // Send stored context for "trend" commands after compare
         })
       })
       const data = await res.json()
@@ -278,6 +280,11 @@ export default function Home() {
       // Store queryContext for next request (enables "detail" command across requests)
       if (data.queryContext) {
         setQueryContext(data.queryContext)
+      }
+      
+      // Store compareContext for next request (enables "trend" command after compare)
+      if (data.compareContext) {
+        setCompareContext(data.compareContext)
       }
 
       const metricsRes = await fetch('/api/chat', {

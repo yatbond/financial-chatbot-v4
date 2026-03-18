@@ -2970,6 +2970,9 @@ function handleComparisonQuery(data: FinancialRow[], project: string, question: 
   if (children.length > 0) {
     response += `\n\n💡 Type **'detail'** to compare sub-items`
   }
+  
+  // Add hint for Trend command
+  response += `\n\n💡 Type **'trend'** or **'trend X'** (X=2-12) to see comparison over multiple months`
 
   // Still provide candidates for drill-down
   const candidates = allRows.slice(0, 5).map((d, i) => ({
@@ -2985,7 +2988,9 @@ function handleComparisonQuery(data: FinancialRow[], project: string, question: 
     matchedKeywords: []
   }))
 
-  return { text: response, candidates }
+  // Return compareContext so frontend can pass it back for "trend" command
+  const compareContext = compareContextCache.get(project)
+  return { text: response, candidates, compareContext }
 }
 
 // ============================================
@@ -4842,12 +4847,18 @@ function answerQuestion(data: FinancialRow[], project: string, question: string,
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json()
-    const { action, year, month, project, projectFile, question, queryContext: clientContext } = body
+    const { action, year, month, project, projectFile, question, queryContext: clientContext, compareContext: clientCompareContext } = body
 
     // If client sends a queryContext, restore it to the cache (for Vercel serverless)
     // This allows "detail" commands to work across requests
     if (clientContext && project && clientContext.itemCode) {
       queryContextCache.set(project, clientContext)
+    }
+    
+    // If client sends a compareContext, restore it to the cache (for Vercel serverless)
+    // This allows "trend" commands after "compare" to work across requests
+    if (clientCompareContext && project) {
+      compareContextCache.set(project, clientCompareContext)
     }
 
     switch (action) {
