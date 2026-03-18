@@ -4119,20 +4119,52 @@ function answerQuestion(data: FinancialRow[], project: string, question: string,
   let targetFinType: string | undefined
   let targetDataType: string | undefined
   
-  // First, try to match PRIMARY Financial Type keywords (projection, revision, budget, etc.)
-  // These get highest priority
-  for (const qWord of questionWords) {
-    if (STOPWORDS.has(qWord)) continue  // Skip stopwords
-    if (!isFinancialTypeKeyword(qWord)) continue  // Skip non-primary keywords
-    
-    for (const ft of financialTypes) {
-      const ftLower = ft.toLowerCase()
-      if (ftLower.includes(qWord)) {
-        targetFinType = ft
-        break
+  // PRIORITY 0: Check for compound Financial Type keywords FIRST
+  // These are multi-word keywords like "cash flow" that should match before individual words
+  const compoundFinTypeKeywords: Array<{ phrase: string; keywords: string[] }> = [
+    { phrase: 'cash flow', keywords: ['cash flow', 'cashflow', 'cf'] },
+    { phrase: 'business plan', keywords: ['business plan', 'budget', 'bp'] },
+    { phrase: 'budget revision', keywords: ['budget revision', 'revision', 'rev'] },
+    { phrase: 'committed value', keywords: ['committed value', 'committed cost', 'committed'] },
+    { phrase: 'audit report', keywords: ['audit report', 'wip', 'audit'] },
+    { phrase: 'projection', keywords: ['projection', 'projected'] },
+    { phrase: 'accrual', keywords: ['accrual', 'accrued'] },
+    { phrase: 'tender', keywords: ['tender', 'budget tender'] },
+  ]
+  
+  for (const { phrase, keywords } of compoundFinTypeKeywords) {
+    for (const keyword of keywords) {
+      const keywordRegex = new RegExp(`\\b${keyword.replace(/\s+/g, '\\s+')}\\b`, 'i')
+      if (keywordRegex.test(expandedQuestion)) {
+        // Find the Financial_Type that matches this phrase
+        for (const ft of financialTypes) {
+          if (ft.toLowerCase().includes(phrase)) {
+            targetFinType = ft
+            break
+          }
+        }
+        if (targetFinType) break
       }
     }
     if (targetFinType) break
+  }
+  
+  // PRIORITY 1: Try to match PRIMARY Financial Type keywords (single words)
+  // These get high priority but only if compound keywords didn't match
+  if (!targetFinType) {
+    for (const qWord of questionWords) {
+      if (STOPWORDS.has(qWord)) continue  // Skip stopwords
+      if (!isFinancialTypeKeyword(qWord)) continue  // Skip non-primary keywords
+      
+      for (const ft of financialTypes) {
+        const ftLower = ft.toLowerCase()
+        if (ftLower.includes(qWord)) {
+          targetFinType = ft
+          break
+        }
+      }
+      if (targetFinType) break
+    }
   }
   
   // If no primary keyword match, try general matching (excluding stopwords)
