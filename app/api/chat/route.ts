@@ -4208,9 +4208,17 @@ function answerQuestion(data: FinancialRow[], project: string, question: string,
   // Helper to check if a word is a PARENT_ITEM_MAP keyword
   // These words should NOT be used for Data_Type matching because they'll
   // match child items incorrectly (e.g., "prelim" matching "Preliminaries - -Manpower")
+  // Also check if the word appears in any PARENT_ITEM_MAP entry's name
+  // This catches words like "less" which appear in "Less : Cost" after acronym expansion
   const isParentItemKeyword = (word: string) => {
     const lower = word.toLowerCase()
-    return Object.keys(PARENT_ITEM_MAP).some(key => key === lower || key.includes(lower))
+    return Object.entries(PARENT_ITEM_MAP).some(([key, info]) => {
+      // Check if word matches the key directly
+      if (key === lower || key.includes(lower)) return true
+      // Check if word appears in the parent item's name (e.g., "less" in "Less : Cost")
+      if (info.name.toLowerCase().includes(lower)) return true
+      return false
+    })
   }
 
   if (!targetDataType) {
